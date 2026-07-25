@@ -112,6 +112,17 @@ O estado do circuito é gravado em disco, então ele conta falhas **entre** exec
 o que importa num programa que termina a cada uso. O cache se poda sozinho: entradas com
 mais de 30 dias saem do arquivo no carregamento.
 
+**A metabusca espaça as próprias consultas.** O DuckDuckGo degrada por cadência, não por
+volume: as quatro consultas saíam em sequência imediata e a última voltava com 1 resultado
+em vez de 8. Medido no mesmo conjunto — em rajada, 25 resultados; com pausa de 1,5–3 s entre
+elas, 32. Em condição pior a rajada zerava a fonte. Além da pausa, a busca para de consultar
+assim que já tem material suficiente para o limite pedido.
+
+Isso resolveu o estrangulamento, mas **não torna a metabusca confiável**: ela não tem chave,
+contrato nem SLA, e o DuckDuckGo pode mudar a política de bloqueio sem aviso. O cache de 1 h
+existe justamente para esse dia — quando a fonte cair, a coleta anterior é servida com a
+idade declarada em tela em vez de a busca zerar.
+
 ```powershell
 triar buscar --sem-cache        # ignora o cache e consulta as fontes do zero
 triar buscar --testar-fontes    # health check; se o Google Search responder, fecha o circuito
@@ -139,6 +150,10 @@ descarta deterministicamente:
   remota;
 - **elegibilidade**: portais internacionais e frases como "US only" ou "we do not sponsor"
   exigem menção explícita a Brasil, LATAM ou contratação global;
+- **página de anúncio**: post de rede social, encurtador e feed não são vaga — um tweet de
+  bot chegou a ser aprovado com 74/100 porque o host era desconhecido e respondia 200. No
+  LinkedIn o caminho precisa conter `/jobs/`; `/feed/update/` e `/posts/` são post *sobre* a
+  vaga, não a vaga;
 - **link**: anúncio que não responde ou redireciona para uma página genérica.
 
 No caminho de texto livre, o nome da empresa devolvido pelo modelo é conferido contra o
