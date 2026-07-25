@@ -23,6 +23,11 @@ natural e do CV base. A integração de IA usa a API Google Gemini.
   nada num programa que termina a cada uso.
 - O cache se poda sozinho no carregamento: entradas com mais de 30 dias são removidas do
   disco. `triar limpar-cache [--tudo]` faz a limpeza manual.
+- **A metabusca espaça as próprias consultas.** O DuckDuckGo degrada por cadência, não por
+  volume: as 4 consultas de `_busca_metasearch` saíam em sequência imediata e a última
+  voltava com 1 resultado em vez de 8. Agora há pausa aleatória de 1,5–3 s entre elas (não
+  só na retentativa) e parada antecipada quando já há material suficiente para o limite
+  pedido — menos consultas, menos exposição ao bloqueio.
 - Prompts e schemas JSON são carregados uma vez (`lru_cache` / constante de módulo), não a
   cada vaga.
 - `triar buscar` combina Jooble, Adzuna, Google Search Grounding e metabusca DDGS.
@@ -98,8 +103,15 @@ Blocos entre `<!-- PRIVADO -->` e `<!-- /PRIVADO -->` no CV base são removidos 
 - **Google Search Grounding está estourando cota** (`429 RESOURCE_EXHAUSTED`) na chave
   gratuita. O circuito abre por 24 h após 3 falhas e a busca cai na metabusca DDGS.
   `triar buscar --testar-fontes` reabre assim que a cota voltar.
-- **A metabusca DDGS é instável**: o DuckDuckGo bloqueia rajadas. Há 2 tentativas com espera
-  de 5–10 s e o cache de 1 h como rede, mas não há chave nem SLA; é fallback, não fonte.
+- **A metabusca DDGS não tem chave, contrato nem SLA** — é fallback, não fonte. O
+  estrangulamento por rajada está resolvido (ver "espaça as próprias consultas" acima):
+  medido no mesmo conjunto de consultas, rajada rendia 25 resultados com a última consulta
+  estrangulada (8, 8, 8, 1) e com pausa rendeu 32 (8, 8, 8, 8); numa condição pior — logo
+  após `--testar-fontes` consumir a franquia — a rajada zerava a fonte inteira. Depois da
+  correção, quatro execuções consecutivas com `--sem-cache` devolveram 21, 21, 22 e 22
+  resultados. **Isso não garante estabilidade futura**: o DuckDuckGo pode mudar a política
+  de bloqueio sem aviso. Por isso o cache de texto livre (TTL 1 h) continua sendo a rede —
+  quando a fonte cair, a coleta anterior é servida com a idade declarada em tela.
 - **Descrições truncadas na origem** (Adzuna ~500, Jooble ~290 caracteres). O enriquecimento
   pela página do anúncio cobre parte disso, mas falha em portais que exigem JavaScript ou
   bloqueiam bots — nesses casos a triagem ainda vê o texto curto.

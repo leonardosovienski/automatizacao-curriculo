@@ -46,6 +46,13 @@ ainda **não foi commitado nem publicado**.
 - **Sem timeout nas chamadas de API** — uma conexão pendurada travava a thread e o
   `as_completed` nunca fechava o lote. Agora 90 s (análise/CV) e 180 s (busca).
 - **`--sem-cache` ainda servia cache vencido** no caminho de fallback.
+- **A metabusca disparava 4 consultas em rajada** e o DuckDuckGo estrangulava a última
+  (8, 8, 8, 1 = 25 resultados; com pausa de 1,5–3 s, 8, 8, 8, 8 = 32). Em condição pior a
+  rajada zerava a fonte. Numa busca real: 0 → 21 resultados, 3 → 5 candidatas, 0 → 1
+  aprovada.
+- **Post de rede social aprovado como vaga**: um tweet de bot passou com 74/100 porque o
+  host era desconhecido e respondeu 200. Hosts não-canônicos (X, Telegram, Reddit,
+  encurtadores) são cortados e no LinkedIn o caminho precisa conter `/jobs/`.
 
 ### Adicionado
 
@@ -71,4 +78,4 @@ ainda **não foi commitado nem publicado**.
 - Prompts e schemas JSON carregados uma vez (`lru_cache` / constante de módulo) em vez de a
   cada vaga.
 - CI passou a rodar em matriz 3.10/3.13 e a incluir `compileall` e `pip check`.
-- Testes: 37 → 92.
+- Testes: 37 → 104.
