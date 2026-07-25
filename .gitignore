@@ -24,3 +24,5 @@ busca_jooble.md
 perfil/cv_base.md
 # Worktrees e estado de sessão do Claude Code: pertencem a outro repositório.
 .claude/
+# Notas locais desta máquina: nunca versionadas.
+.local/
