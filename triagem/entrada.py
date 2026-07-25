@@ -1,6 +1,7 @@
 """Carrega vagas do input (JSON ou texto livre) e normaliza para texto por vaga."""
 
 import json
+import re
 from pathlib import Path
 from typing import List
 
@@ -34,7 +35,6 @@ def carregar_vagas(conteudo: str) -> List[str]:
         return vagas
 
     # Aceita CRLF e espaços na linha separadora.
-    import re
     blocos = [b.strip() for b in re.split(r"\r?\n\s*---\s*\r?\n", conteudo)]
     return [b for b in blocos if b]
 

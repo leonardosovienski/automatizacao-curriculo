@@ -12,17 +12,17 @@ from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 
-from . import historico
+from . import cache, historico
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
-from .buscador import buscar_vagas
+from .buscador import _redigir_segredos, _url_canonica, buscar_vagas, testar_fontes
 from .curriculo import carregar_cv_base, gerar_material
 from .entrada import carregar_arquivo, carregar_vagas
 from .exportar import exportar
 from .relatorio import render_relatorio
 from .schema import AnaliseVaga, VagaPontuada
-from .scoring import pontuar
+from .scoring import parse_pesos, pontuar
 
-SUBCOMANDOS = {"buscar", "analisar", "historico", "status", "cv"}
+SUBCOMANDOS = {"buscar", "analisar", "historico", "status", "cv", "limpar-cache"}
 
 
 def _inteiro_positivo(valor: str) -> int:
@@ -54,6 +54,12 @@ def _montar_parser() -> argparse.ArgumentParser:
     bu.add_argument("--paralelo", type=_inteiro_positivo, default=4, metavar="N")
     bu.add_argument("--saida", metavar="ARQ", help="Exporta o relatório (.md ou .csv)")
     bu.add_argument("--reanalisar", action="store_true")
+    bu.add_argument("--sem-cache", action="store_true", dest="sem_cache",
+                    help="Ignora o cache de busca e consulta as fontes do zero")
+    bu.add_argument("--testar-fontes", action="store_true", dest="testar_fontes",
+                    help="Só checa a saúde das fontes e fecha o circuito se elas responderem")
+    bu.add_argument("--pesos", metavar="LISTA",
+                    help="Pesos do score, ex.: d1=0.15,d2=0.30,d3=0.25,d4=0.15,d5=0.15")
 
     an = sub.add_parser("analisar", help="Analisa um lote de vagas (JSON ou texto)")
     an.add_argument("arquivo", nargs="?", help="Arquivo .json ou .txt com as vagas")
@@ -65,6 +71,8 @@ def _montar_parser() -> argparse.ArgumentParser:
     an.add_argument("--saida", metavar="ARQ", help="Exporta o relatório (.md ou .csv)")
     an.add_argument("--reanalisar", action="store_true",
                     help="Re-analisa vagas já presentes no histórico")
+    an.add_argument("--pesos", metavar="LISTA",
+                    help="Pesos do score, ex.: d1=0.15,d2=0.30,d3=0.25,d4=0.15,d5=0.15")
 
     hi = sub.add_parser("historico", help="Lista as vagas já analisadas")
     hi.add_argument("--status", choices=historico.STATUS_VALIDOS, help="Filtra por status")
@@ -72,6 +80,10 @@ def _montar_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", help="Atualiza o status de uma vaga (acompanhamento)")
     st.add_argument("id", help="ID da vaga (ou prefixo único)")
     st.add_argument("novo_status", choices=[s for s in historico.STATUS_VALIDOS if s != "descartada"])
+
+    lc = sub.add_parser("limpar-cache", help="Remove entradas antigas do cache de busca")
+    lc.add_argument("--tudo", action="store_true",
+                    help="Apaga todas as entradas e reseta os circuitos das fontes")
 
     cv = sub.add_parser("cv", help="Gera bullets de CV + mensagem de candidatura para uma vaga")
     cv.add_argument("id", help="ID da vaga no histórico (ou prefixo único)")
@@ -100,6 +112,8 @@ def main() -> int:
     args = parser.parse_args(argv)
 
     load_dotenv()
+    historico.aplicar_config_do_ambiente()
+    cache.aplicar_config_do_ambiente()
 
     if args.comando == "buscar":
         return _cmd_buscar(args)
@@ -111,7 +125,27 @@ def main() -> int:
         return _cmd_status(args)
     if args.comando == "cv":
         return _cmd_cv(args)
+    if args.comando == "limpar-cache":
+        return _cmd_limpar_cache(args)
     return 1
+
+
+def _cmd_limpar_cache(args) -> int:
+    estado = cache.carregar()  # já poda entradas acima de DIAS_RETENCAO
+    if args.tudo:
+        removidas = cache.esvaziar(estado)
+        detalhe = "todas as entradas e os circuitos das fontes"
+    else:
+        removidas = cache.podar(estado)
+        detalhe = f"entradas com mais de {cache.DIAS_RETENCAO} dias"
+    try:
+        cache.salvar(estado)
+    except OSError as e:
+        print(f"Erro ao gravar o cache: {e}")
+        return 1
+    print(f"Cache limpo ({detalhe}): {removidas} entrada(s) removida(s).")
+    print(f"Restam {len(estado['entradas'])} entrada(s) em {cache.ARQUIVO}.")
+    return 0
 
 
 def _exigir_api_key() -> bool:
@@ -127,23 +161,50 @@ def _cmd_buscar(args) -> int:
     if not _exigir_api_key():
         return 1
     try:
-        cv_base = carregar_cv_base()
         client = criar_cliente()
-        print(f"Buscando até {args.limite} vaga(s) atuais na web para: {args.pedido}\n")
-        vagas = buscar_vagas(client, cv_base, args.pedido, args.limite, args.modelo)
     except Exception as e:
-        print(f"Erro na busca de vagas ({type(e).__name__}): {e}")
+        print(f"Erro ao iniciar cliente da API: {_redigir_segredos(str(e))}")
+        return 1
+
+    if args.testar_fontes:
+        print("Checando a saúde das fontes de busca...\n")
+        estado = testar_fontes(client, log=print)
+        vivas = sum(1 for ok in estado.values() if ok)
+        print(f"\n{vivas} de {len(estado)} fonte(s) responderam.")
+        return 0 if vivas else 1
+
+    try:
+        cv_base = carregar_cv_base()
+        print(f"Buscando até {args.limite} vaga(s) atuais na web para: {args.pedido}\n")
+        vagas = buscar_vagas(
+            client, cv_base, args.pedido, args.limite, args.modelo,
+            log=print, usar_cache=not args.sem_cache,
+        )
+    except Exception as e:
+        print(f"Erro na busca de vagas ({type(e).__name__}): {_redigir_segredos(str(e))}")
         return 1
     if not vagas:
-        print("Nenhuma vaga atual com link verificável foi encontrada.")
+        print("\nNenhuma vaga atual com link verificável foi encontrada.")
         return 0
 
-    print(f"Encontradas {len(vagas)} vaga(s) com link. Iniciando triagem...\n")
+    print(f"\nEncontradas {len(vagas)} vaga(s) com link. Iniciando triagem...\n")
     textos = [json.dumps(vaga.model_dump(), ensure_ascii=False, indent=2) for vaga in vagas]
-    return _cmd_analisar(args, textos)
+    # O texto vem de um modelo e muda de execução para execução. A URL final (após
+    # seguir os redirects do agregador) é a chave estável — e é a mesma quando a
+    # vaga chega pela Jooble e pela Adzuna.
+    chaves = [_url_canonica(vaga.chave_dedup()) for vaga in vagas]
+    return _cmd_analisar(args, textos, chaves)
 
 
-def _cmd_analisar(args, textos=None) -> int:
+def _cmd_analisar(args, textos=None, chaves=None) -> int:
+    try:
+        pesos = parse_pesos(args.pesos) if getattr(args, "pesos", None) else None
+    except ValueError as e:
+        print(f"Erro em --pesos: {e}")
+        return 1
+    if pesos:
+        print("Pesos personalizados: " + ", ".join(f"{k}={v:g}" for k, v in pesos.items()) + "\n")
+
     if textos is None:
         if args.stdin and args.arquivo:
             print("Use apenas uma fonte de entrada: informe um arquivo ou --stdin.")
@@ -169,15 +230,20 @@ def _cmd_analisar(args, textos=None) -> int:
     pendentes: List[Tuple[str, str]] = []  # (id, texto)
     vistos = set()
 
-    for texto in textos:
-        vid = historico.gerar_id(texto)
+    for indice, texto in enumerate(textos):
+        vid = historico.gerar_id(chaves[indice] if chaves else texto)
         if vid in vistos:
             continue  # vaga duplicada dentro do próprio input
         vistos.add(vid)
         entrada = hist.get(vid)
         if entrada and entrada.get("analise") and not args.reanalisar:
             analise = AnaliseVaga.model_validate(entrada["analise"])
-            resultados.append(VagaPontuada(id=vid, analise=analise, score_final=entrada.get("score_final")))
+            # Com pesos personalizados o score gravado não vale: recalcula.
+            reaproveitado = (
+                pontuar(analise, vid, pesos) if pesos
+                else VagaPontuada(id=vid, analise=analise, score_final=entrada.get("score_final"))
+            )
+            resultados.append(reaproveitado)
             print(f"  [{vid}] {analise.empresa or '?'} - {analise.titulo_normalizado}: "
                   f"já no histórico (status: {entrada['status']}) — pulando. Use --reanalisar para refazer.")
         else:
@@ -195,8 +261,9 @@ def _cmd_analisar(args, textos=None) -> int:
         print(f"Analisando {len(pendentes)} vaga(s) nova(s) com {MODELOS[args.modelo]}"
               f" ({args.paralelo} em paralelo)...\n")
 
-        analises: Dict[str, AnaliseVaga] = {}
-        analises, falhas = _analisar_paralelo(client, pendentes, args.modelo, args.paralelo)
+        analises, falhas = _analisar_paralelo(
+            client, pendentes, args.modelo, args.paralelo, pesos
+        )
 
         # Segunda chance sequencial para falhas individuais.
         if falhas:
@@ -213,7 +280,7 @@ def _cmd_analisar(args, textos=None) -> int:
         for vid, texto in pendentes:
             if vid not in analises:
                 continue
-            vaga = pontuar(analises[vid], vid)
+            vaga = pontuar(analises[vid], vid, pesos)
             historico.registrar(hist, vaga, texto)
             resultados.append(vaga)
 
@@ -246,7 +313,7 @@ def _cmd_analisar(args, textos=None) -> int:
     return 0
 
 
-def _analisar_paralelo(client, pendentes, modelo, paralelo):
+def _analisar_paralelo(client, pendentes, modelo, paralelo, pesos=None):
     analises: Dict[str, AnaliseVaga] = {}
     falhas: List[Tuple[str, str, Exception]] = []
     total = len(pendentes)
@@ -262,7 +329,7 @@ def _analisar_paralelo(client, pendentes, modelo, paralelo):
             try:
                 analise = futuro.result()
                 analises[vid] = analise
-                vaga = pontuar(analise, vid)
+                vaga = pontuar(analise, vid, pesos)
                 rotulo = "DESCARTADA" if vaga.score_final is None else f"{vaga.score_final:.0f}/100"
                 print(f"  [{feitas}/{total}] [{vid}] {analise.empresa or '?'} - "
                       f"{analise.titulo_normalizado}: {rotulo}")

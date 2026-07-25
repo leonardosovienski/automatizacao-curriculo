@@ -6,6 +6,7 @@ venv/
 .pytest_cache/
 historico.json
 historico.json.bak
+.cache_busca.json
 relatorio*.md
 relatorio*.csv
 candidatura*.md

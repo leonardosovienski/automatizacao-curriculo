@@ -20,6 +20,18 @@ ARQUIVO = Path(
 
 STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada"]
 
+PADRAO = Path(__file__).resolve().parent.parent / "historico.json"
+
+
+def aplicar_config_do_ambiente() -> None:
+    """Re-resolve o caminho do histórico depois que o .env foi carregado.
+
+    `ARQUIVO` é lido na importação do módulo, que acontece antes do `load_dotenv()`
+    do CLI — sem esta chamada, `TRIAGEM_HISTORICO` definido no `.env` era ignorado.
+    """
+    global ARQUIVO
+    ARQUIVO = Path(os.environ.get("TRIAGEM_HISTORICO") or PADRAO)
+
 
 def gerar_id(texto: str) -> str:
     """ID estável da vaga: hash do texto normalizado (espaços/caixa ignorados)."""

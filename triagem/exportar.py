@@ -9,6 +9,17 @@ from .relatorio import ROTULOS_NIVEL, ROTULOS_REGIME, separar
 from .schema import VagaPontuada
 
 
+def _seguro_para_planilha(valor):
+    """Neutraliza fórmulas: Excel executa células iniciadas por = + - @ (CSV injection).
+
+    Descrições de vaga chegam de terceiros; um `=HYPERLINK(...)` no título viraria
+    fórmula ativa na planilha do usuário.
+    """
+    if isinstance(valor, str) and valor[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + valor
+    return valor
+
+
 def exportar(resultados: List[VagaPontuada], caminho: str) -> None:
     destino = Path(caminho)
     ext = destino.suffix.lower()
@@ -83,7 +94,7 @@ def _csv(resultados: List[VagaPontuada], caminho: str) -> None:
         for vaga in aprovadas + descartadas:
             a = vaga.analise
             n = a.notas
-            writer.writerow({
+            writer.writerow({k: _seguro_para_planilha(v) for k, v in {
                 "id": vaga.id,
                 "score": vaga.score_final if vaga.score_final is not None else "",
                 "empresa": a.empresa,
@@ -103,4 +114,4 @@ def _csv(resultados: List[VagaPontuada], caminho: str) -> None:
                 "d5": n.d5_nivel_real.nota if n else "",
                 "alertas": "; ".join(a.alertas),
                 "motivo_descarte": a.motivo_descarte or "",
-            })
+            }.items()})

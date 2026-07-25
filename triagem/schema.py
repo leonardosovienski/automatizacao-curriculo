@@ -62,7 +62,12 @@ class VagaPontuada(BaseModel):
 
 
 class VagaEncontrada(BaseModel):
-    """Vaga descoberta na web antes da análise detalhada."""
+    """Vaga descoberta na web antes da análise detalhada.
+
+    `localizacao` guarda a praça declarada pela fonte (campo estruturado da API,
+    quando existe). É usada pelo filtro determinístico de localização — o modelo
+    já foi visto inventando "remoto" para vagas presenciais em outra cidade.
+    """
 
     titulo: str = Field(min_length=1)
     empresa: str = ""
@@ -70,6 +75,19 @@ class VagaEncontrada(BaseModel):
     link: str = Field(pattern=r"^https?://")
     origem: str = ""
     publicada_em: str = ""
+    localizacao: str = ""
+    # URL após seguir os redirects do agregador. É a chave de deduplicação entre
+    # fontes: a mesma vaga chega como jooble.org/jdp/N e adzuna.com.br/details/N,
+    # mas ambas terminam no anúncio original.
+    link_final: str = ""
+    # "alta" = veio de campo estruturado da API; "baixa" = o modelo inferiu do
+    # texto e não foi possível confirmar no material de origem.
+    confianca_empresa: Literal["alta", "media", "baixa"] = "alta"
+    # Descrição completa obtida da página do anúncio (Adzuna/Jooble truncam).
+    descricao_completa: bool = False
+
+    def chave_dedup(self) -> str:
+        return self.link_final or self.link
 
 
 class ResultadoBusca(BaseModel):

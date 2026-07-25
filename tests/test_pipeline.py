@@ -1,26 +1,76 @@
 """Testes do pipeline sem API: entrada, scoring, relatório, histórico e export."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
-from triagem import historico
-from triagem.analisador import MODELO_PADRAO, MODELOS, analisar_vaga
+from triagem import cache, historico
+from triagem.analisador import (
+    MODELO_PADRAO,
+    MODELOS,
+    TIMEOUT_ANALISE_MS,
+    analisar_vaga,
+    gerar_com_retentativa,
+    system_prompt,
+)
 from triagem.buscador import (
+    DIAS_MAXIMOS_ANUNCIO,
+    Inspecao,
+    _ancorar_empresa,
     _buscar_adzuna,
     _buscar_jooble,
+    _dias_desde,
+    _enriquecer_descricao,
+    _fonte_estruturada,
+    _inspecionar_link,
+    _limpar_url,
+    _local_declarado_incompativel,
     _localizacao_compativel,
+    _normalizar,
+    _pontuacao_preliminar,
+    _redigir_segredos,
     _selecionar_candidatas,
+    _texto_visivel,
+    _url_canonica,
+    _validar_links,
     buscar_vagas,
 )
-from triagem.cli import _inteiro_positivo
-from triagem.curriculo import gerar_material
+from triagem.cli import _inteiro_positivo, _montar_parser
+from triagem.curriculo import gerar_material, remover_blocos_privados
 from triagem.entrada import carregar_vagas
 from triagem.exportar import exportar
 from triagem.relatorio import render_relatorio
-from triagem.schema import AnaliseVaga, Dimensao, Notas
-from triagem.scoring import pontuar
+from triagem.schema import AnaliseVaga, Dimensao, Notas, VagaEncontrada
+from triagem.scoring import parse_pesos, pontuar
+
+
+def _vaga(titulo, empresa="Empresa", link="https://exemplo.com.br/v", descricao=None,
+          localizacao="", publicada_em=""):
+    return VagaEncontrada(
+        titulo=titulo,
+        empresa=empresa,
+        link=link,
+        descricao=descricao or "Vaga remota no Brasil para Júnior com C#, .NET e APIs REST.",
+        origem="teste",
+        localizacao=localizacao,
+        publicada_em=publicada_em,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _sem_espera_de_backoff(monkeypatch):
+    """Neutraliza o sleep do backoff: a suíte testa a lógica, não o relógio."""
+    monkeypatch.setattr("triagem.buscador.time.sleep", lambda _: None)
+    monkeypatch.setattr("triagem.analisador.time.sleep", lambda _: None)
+
+
+@pytest.fixture(autouse=True)
+def _cache_isolado(tmp_path, monkeypatch):
+    """Nenhum teste pode ler ou escrever o cache real do usuário."""
+    monkeypatch.setattr(cache, "ARQUIVO", tmp_path / "cache_busca.json")
 
 
 def _dim(nota, just="x"):
@@ -126,14 +176,38 @@ def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
     )
     client = _ClienteFake([descoberta, _resposta_gemini(json_vagas)])
     monkeypatch.setattr(
-        "triagem.buscador._validar_links", lambda vagas, limite: vagas[:limite]
+        "triagem.buscador._validar_links", lambda vagas, limite, log=None: vagas[:limite]
     )
     vagas = buscar_vagas(client, "CV", "vagas C# Jr", limite=5)
     assert len(vagas) == 1
     assert vagas[0].titulo == "Dev .NET Jr"
 
 
-def test_busca_jooble_converte_resultados(monkeypatch):
+def test_busca_texto_livre_descarta_item_invalido_sem_perder_o_lote(monkeypatch):
+    """Antes, um único item fora do schema invalidava a lista inteira."""
+    descoberta = _resposta_gemini("Resultados da web.")
+    json_vagas = json.dumps(
+        {
+            "vagas": [
+                {"titulo": "DevOps Jr", "empresa": "A", "descricao": "curta", "link": "x"},
+                {
+                    "titulo": "DevOps Júnior",
+                    "empresa": "B",
+                    "descricao": "Vaga remota no Brasil com Azure DevOps, Docker e CI/CD.",
+                    "link": "https://exemplo.com.br/vaga-boa",
+                },
+            ]
+        }
+    )
+    client = _ClienteFake([descoberta, _resposta_gemini(json_vagas)])
+    monkeypatch.setattr(
+        "triagem.buscador._validar_links", lambda vagas, limite, log=None: vagas[:limite]
+    )
+    vagas = buscar_vagas(client, "CV", "DevOps Jr", limite=5)
+    assert [v.empresa for v in vagas] == ["B"]
+
+
+def test_busca_jooble_devolve_vagas_estruturadas(monkeypatch):
     monkeypatch.setenv("JOOBLE_API_KEY", "teste")
 
     class Resposta:
@@ -146,23 +220,28 @@ def test_busca_jooble_converte_resultados(monkeypatch):
                     {
                         "title": "DevOps Jr",
                         "company": "Empresa",
-                        "location": "Remote",
+                        "location": "Curitiba",
                         "type": "CLT",
-                        "updated": "2026-07-24",
-                        "link": "https://example.com/job",
-                        "snippet": "Azure e CI/CD",
+                        "updated": "2026-07-24T10:00:00.1234567",
+                        "link": "https://example.com/job?utm_source=segredo&id=7",
+                        "snippet": "&nbsp;Azure, <b>CI/CD</b> e Docker para pipelines internos.",
                     }
                 ]
             }
 
     monkeypatch.setattr("triagem.buscador.httpx.post", lambda *args, **kwargs: Resposta())
-    texto, fontes = _buscar_jooble("DevOps Jr", 3)
-    assert "DevOps Jr" in texto
-    assert fontes == ["- Jooble: https://example.com/job"]
+    vagas = _buscar_jooble("DevOps Jr", 3)
+    assert len(vagas) == 1
+    assert vagas[0].titulo == "DevOps Jr"
+    assert vagas[0].localizacao == "Curitiba"
+    # HTML do snippet limpo e parâmetro de rastreio removido do link.
+    assert "&nbsp;" not in vagas[0].descricao and "<b>" not in vagas[0].descricao
+    assert vagas[0].link == "https://example.com/job?id=7"
 
 
-def test_busca_adzuna_converte_resultados(monkeypatch):
-    monkeypatch.setenv("ADZUNA_APP_ID", "app")
+def test_busca_adzuna_nao_vaza_app_id_no_link(monkeypatch):
+    """O redirect_url da Adzuna carrega `utm_source=<ADZUNA_APP_ID>`."""
+    monkeypatch.setenv("ADZUNA_APP_ID", "app-id-secreto")
     monkeypatch.setenv("ADZUNA_API_KEY", "key")
 
     class Resposta:
@@ -175,29 +254,27 @@ def test_busca_adzuna_converte_resultados(monkeypatch):
                     {
                         "title": "DevOps Jr",
                         "company": {"display_name": "Empresa"},
-                        "location": {"display_name": "Curitiba"},
+                        "location": {"display_name": "Curitiba, Paraná"},
                         "created": "2026-07-24T12:00:00Z",
-                        "redirect_url": "https://example.com/adzuna-job",
-                        "description": "Azure, Docker e CI/CD",
+                        "redirect_url": "https://www.adzuna.com.br/details/1?utm_medium=api&utm_source=app-id-secreto",
+                        "description": "Azure, Docker e CI/CD em pipelines de entrega contínua.",
                     }
                 ]
             }
 
     monkeypatch.setattr("triagem.buscador.httpx.get", lambda *args, **kwargs: Resposta())
-    texto, fontes = _buscar_adzuna("DevOps Jr", 3)
-    assert "DevOps Jr" in texto
-    assert "Curitiba" in texto
-    assert fontes == ["- Adzuna: https://example.com/adzuna-job"]
+    vagas = _buscar_adzuna("DevOps Jr", 3)
+    assert len(vagas) == 1
+    assert vagas[0].link == "https://www.adzuna.com.br/details/1"
+    assert "app-id-secreto" not in vagas[0].link
+    assert vagas[0].localizacao == "Curitiba, Paraná"
 
 
 @pytest.mark.parametrize(
     "funcao,variaveis",
     [
         (_buscar_jooble, {"JOOBLE_API_KEY": "teste"}),
-        (
-            _buscar_adzuna,
-            {"ADZUNA_APP_ID": "app", "ADZUNA_API_KEY": "key"},
-        ),
+        (_buscar_adzuna, {"ADZUNA_APP_ID": "app", "ADZUNA_API_KEY": "key"}),
     ],
 )
 def test_fonte_ignora_resposta_json_invalida(monkeypatch, funcao, variaveis):
@@ -213,13 +290,617 @@ def test_fonte_ignora_resposta_json_invalida(monkeypatch, funcao, variaveis):
 
     monkeypatch.setattr("triagem.buscador.httpx.get", lambda *args, **kwargs: Resposta())
     monkeypatch.setattr("triagem.buscador.httpx.post", lambda *args, **kwargs: Resposta())
-    assert funcao("DevOps Jr", 3) == ("", [])
+    assert funcao("DevOps Jr", 3) == []
+
+
+@pytest.mark.parametrize(
+    "funcao,variaveis",
+    [
+        (_buscar_jooble, {"JOOBLE_API_KEY": "teste"}),
+        (_buscar_adzuna, {"ADZUNA_APP_ID": "app", "ADZUNA_API_KEY": "key"}),
+    ],
+)
+def test_fonte_engole_erro_de_rede_sem_derrubar_a_busca(monkeypatch, funcao, variaveis):
+    for nome, valor in variaveis.items():
+        monkeypatch.setenv(nome, valor)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("erro que não herda de httpx.HTTPError")
+
+    monkeypatch.setattr("triagem.buscador.httpx.get", explode)
+    monkeypatch.setattr("triagem.buscador.httpx.post", explode)
+    assert funcao("DevOps Jr", 3) == []
+
+
+def test_redigir_segredos_mascara_chaves_do_ambiente(monkeypatch):
+    monkeypatch.setenv("JOOBLE_API_KEY", "chave-super-secreta")
+    texto = "falha ao chamar https://jooble.org/api/chave-super-secreta"
+    assert "chave-super-secreta" not in _redigir_segredos(texto)
+    assert "<JOOBLE_API_KEY>" in _redigir_segredos(texto)
+
+
+def test_url_canonica_preserva_id_na_query():
+    """Indeed/LinkedIn identificam a vaga na query: descartá-la fundia vagas distintas."""
+    a = _url_canonica("https://br.indeed.com/viewjob?jk=AAA&utm_source=x")
+    b = _url_canonica("https://br.indeed.com/viewjob?jk=BBB")
+    assert a != b
+    assert "utm_source" not in a
+
+
+def test_limpar_url_remove_apenas_rastreio():
+    limpo = _limpar_url("https://x.com.br/v?jk=1&utm_medium=api&gclid=2&page=3")
+    assert "jk=1" in limpo and "page=3" in limpo
+    assert "utm_medium" not in limpo and "gclid" not in limpo
+
+
+def test_url_do_linkedin_estavel_entre_execucoes():
+    """`position`/`pageNum` mudam a cada busca e quebravam o dedup do histórico."""
+    base = "https://br.linkedin.com/jobs/view/devsecops-jr-at-x-4416146595"
+    assert _url_canonica(f"{base}?position=52&pageNum=0") == _url_canonica(f"{base}?position=3&pageNum=1")
+
+
+@pytest.mark.parametrize(
+    "bruto,esperado_none",
+    [("2026-07-24T10:00:00.1234567", False), ("2026-07-24", False), ("", True), ("ontem", True)],
+)
+def test_dias_desde_aceita_formatos_das_apis(bruto, esperado_none):
+    assert (_dias_desde(bruto) is None) is esperado_none
+
+
+def test_area_e_decidida_pelo_titulo_e_nao_pela_descricao():
+    """Regressão real: 'Data Engineer' e 'Talent Sourcer' entravam porque a descrição citava cloud."""
+    fora = [
+        _vaga("Junior Data Scientist", descricao="Vaga remota usando cloud, Python e modelos de ML."),
+        _vaga("Talent Sourcer (Contract)", descricao="Remote role supporting cloud engineering hiring."),
+        _vaga("Full Stack Developer", descricao="Vaga remota com React, Node e cloud na AWS para o time."),
+    ]
+    dentro = [
+        _vaga("DevSecOps Júnior", link="https://exemplo.com.br/1",
+              descricao="Vaga remota no Brasil com pipelines e segurança."),
+        _vaga("Cloud Engineer Jr", empresa="Outra", link="https://exemplo.com.br/2",
+              descricao="Vaga remota no Brasil com Azure e Terraform."),
+    ]
+    assert _selecionar_candidatas(fora, 10) == []
+    assert len(_selecionar_candidatas(dentro, 10)) == 2
+
+
+def test_vaga_antiga_e_banco_de_talentos_sao_descartados():
+    antiga = _vaga("DevOps Júnior", publicada_em="2020-01-01T00:00:00Z")
+    pool = _vaga("Banco de Talentos - Desenvolvedor .NET C#")
+    assert _selecionar_candidatas([antiga, pool], 10) == []
+
+
+def test_prefiltro_penaliza_experiencia_em_ingles_e_senioridade_na_descricao():
+    ingles = _vaga(
+        "Cloud Engineer",
+        descricao="Remote position requiring 6+ years of experience with AWS and Kubernetes.",
+    )
+    senior_na_descricao = _vaga(
+        "Engenheiro DevOps",
+        descricao="Buscamos profissional senior para liderar a plataforma de CI/CD em Azure.",
+    )
+    assert _pontuacao_preliminar(ingles) < 8
+    assert _pontuacao_preliminar(senior_na_descricao) < 8
+
+
+def test_localizacao_declarada_vence_texto_do_anuncio():
+    """Regressão real: a Adzuna dizia 'Recife' e o modelo classificou como remoto."""
+    presencial_recife = _vaga(
+        "Desenvolvedor Back-end Júnior com Foco em DevOps",
+        descricao="Requisitos: Java, Spring, JSF, Tomcat, WebServices e PostgreSQL na sede.",
+        localizacao="Recife, Pernambuco",
+    )
+    remota_recife = _vaga(
+        "Desenvolvedor .NET Júnior",
+        descricao="Vaga 100% remota para todo o Brasil com C#, .NET e Azure DevOps.",
+        localizacao="Recife, Pernambuco",
+    )
+    curitiba = _vaga("Estágio DevOps", localizacao="Curitiba, Paraná")
+    generica = _vaga("Estágio DevOps", localizacao="Brasil")
+    assert _local_declarado_incompativel(presencial_recife)
+    assert not _local_declarado_incompativel(remota_recife)
+    assert not _local_declarado_incompativel(curitiba)
+    assert not _local_declarado_incompativel(generica)
+
+
+def test_vaga_com_restricao_explicita_aos_eua_e_reprovada():
+    restrita = _vaga(
+        "DevOps Engineer Junior",
+        link="https://boards.greenhouse.io/x/jobs/1",
+        descricao="Remote role, US only. Must be located in the United States to apply.",
+    )
+    aberta = _vaga(
+        "DevOps Engineer Junior",
+        link="https://boards.greenhouse.io/x/jobs/2",
+        descricao="Worldwide remote role hiring in Brazil and LATAM, Docker and Terraform.",
+    )
+    assert not _localizacao_compativel(restrita)
+    assert _localizacao_compativel(aberta)
+
+
+def test_retentativa_repete_erro_transitorio_e_desiste_de_erro_definitivo(monkeypatch):
+    monkeypatch.setattr("triagem.analisador.time.sleep", lambda _: None)
+
+    class ClienteInstavel:
+        def __init__(self, erros):
+            self.erros = erros
+            self.chamadas = 0
+            self.models = self
+
+        def generate_content(self, **kwargs):
+            self.chamadas += 1
+            if self.erros:
+                raise self.erros.pop(0)
+            return "ok"
+
+    transitorio = ClienteInstavel([RuntimeError("429 RESOURCE_EXHAUSTED")])
+    assert gerar_com_retentativa(transitorio, model="m") == "ok"
+    assert transitorio.chamadas == 2
+
+    definitivo = ClienteInstavel([ValueError("400 INVALID_ARGUMENT")])
+    with pytest.raises(ValueError):
+        gerar_com_retentativa(definitivo, model="m")
+    assert definitivo.chamadas == 1
+
+
+def test_chamadas_de_api_tem_timeout_explicito():
+    """Sem timeout, uma conexão pendurada trava a thread e o lote nunca fecha."""
+    client = _ClienteFake(_resposta_gemini(_analise().model_dump_json()))
+    analisar_vaga(client, "vaga de teste")
+    assert client.models.chamada["config"].http_options.timeout == TIMEOUT_ANALISE_MS
+
+    client = _ClienteFake(_resposta_gemini("material"))
+    gerar_material(client, "cv", "vaga", _analise().model_dump())
+    assert client.models.chamada["config"].http_options.timeout == TIMEOUT_ANALISE_MS
+
+
+def test_prompts_sao_lidos_do_disco_uma_vez_so():
+    """Antes, cada vaga analisada relia system_prompt.md — I/O redundante no hot path."""
+    system_prompt.cache_clear()
+    primeiro = system_prompt()
+    system_prompt()
+    assert system_prompt.cache_info().misses == 1
+    assert system_prompt.cache_info().hits == 1
+    assert primeiro.strip()
+
+
+def test_link_com_erro_de_rede_repetido_e_considerado_morto(monkeypatch):
+    tentativas = {"n": 0}
+
+    def sempre_falha(link):
+        tentativas["n"] += 1
+        raise httpx.ConnectError("dns")
+
+    monkeypatch.setattr("triagem.buscador._obter", sempre_falha)
+    assert _inspecionar_link(_vaga("DevOps Jr")).ativo is False
+    assert tentativas["n"] == 2  # uma segunda chance antes de descartar
+
+
+def test_link_com_soluco_de_rede_sobrevive(monkeypatch):
+    class Resposta:
+        status_code = 200
+        url = "https://exemplo.com.br/v"
+        text = "vaga aberta"
+
+    chamadas = {"n": 0}
+
+    def instavel(link):
+        chamadas["n"] += 1
+        if chamadas["n"] == 1:
+            raise httpx.ReadTimeout("lento")
+        return Resposta()
+
+    monkeypatch.setattr("triagem.buscador._obter", instavel)
+    assert _inspecionar_link(_vaga("DevOps Jr")).ativo is True
+
+
+def test_url_invalida_nao_derruba_a_validacao(monkeypatch):
+    def url_ruim(link):
+        raise httpx.InvalidURL("host inválido")
+
+    monkeypatch.setattr("triagem.buscador._obter", url_ruim)
+    assert _inspecionar_link(_vaga("DevOps Jr")).ativo is True
+
+
+@pytest.mark.parametrize("titulo", ["DevOps Engineer Mid-Level", "Cloud Team Lead", ".NET Midlevel"])
+def test_senioridade_bloqueia_termos_em_ingles(titulo):
+    assert _pontuacao_preliminar(_vaga(titulo)) == -100
+
+
+def test_vaga_sem_patrocinio_de_visto_e_reprovada():
+    sem_visto = _vaga(
+        "DevOps Engineer Junior",
+        link="https://boards.greenhouse.io/x/jobs/9",
+        descricao="Fully remote position. We do not sponsor visas for this role at this time.",
+    )
+    assert not _localizacao_compativel(sem_visto)
+
+
+def test_cv_base_remove_blocos_marcados_como_privados():
+    """O bloco marcado nunca é enviado à API do Gemini."""
+    texto = (
+        "# CV\n\n"
+        "<!-- PRIVADO -->\nCPF: 000.000.000-00\nTelefone: (41) 90000-0000\n<!-- /PRIVADO -->\n"
+        "## Experiência\n\nEstágio DevSecOps na Volvo.\n"
+    )
+    limpo, removidos = remover_blocos_privados(texto)
+    assert removidos == 1
+    assert "CPF" not in limpo and "90000" not in limpo
+    assert "Estágio DevSecOps na Volvo." in limpo
+
+
+def test_cv_base_sem_marcadores_fica_intacto():
+    texto = "# CV\n\nEstágio DevSecOps na Volvo.\n"
+    assert remover_blocos_privados(texto) == (texto, 0)
+
+
+# ---------------------------------------------------------------- cache e circuito
+
+def test_cache_serve_dentro_do_ttl_e_expira_depois():
+    estado = cache.carregar()
+    cache.guardar(estado, "Jooble", "consulta", [{"titulo": "x"}])
+    dados, idade = cache.obter(estado, "Jooble", "consulta")
+    assert dados == [{"titulo": "x"}] and idade is not None
+
+    # Envelhece a entrada além do TTL da fonte.
+    chave = next(iter(estado["entradas"]))
+    vencido = datetime.now(timezone.utc) - timedelta(seconds=cache.TTL_SEGUNDOS["Jooble"] + 60)
+    estado["entradas"][chave]["gravado_em"] = vencido.isoformat(timespec="seconds")
+
+    assert cache.obter(estado, "Jooble", "consulta")[0] is None
+    assert cache.obter_vencido(estado, "Jooble", "consulta")[0] == [{"titulo": "x"}]
+
+
+def test_cache_corrompido_nao_derruba_a_busca(tmp_path, monkeypatch):
+    arquivo = tmp_path / "cache_busca.json"
+    arquivo.write_text("{ isso não é json", encoding="utf-8")
+    monkeypatch.setattr(cache, "ARQUIVO", arquivo)
+    assert cache.carregar() == {"entradas": {}, "circuitos": {}}
+
+
+def test_circuito_abre_apos_falhas_consecutivas_e_fecha_no_sucesso():
+    estado = cache.carregar()
+    for _ in range(cache.FALHAS_PARA_ABRIR - 1):
+        assert cache.registrar_falha(estado, "Google Search") is False
+        assert cache.circuito_aberto(estado, "Google Search") is None
+
+    assert cache.registrar_falha(estado, "Google Search") is True
+    restante = cache.circuito_aberto(estado, "Google Search")
+    assert restante is not None and 0 < restante <= cache.HORAS_CIRCUITO_ABERTO
+
+    cache.registrar_sucesso(estado, "Google Search")
+    assert cache.circuito_aberto(estado, "Google Search") is None
+
+
+def test_fonte_estruturada_usa_cache_em_vez_de_chamar_a_api():
+    estado = cache.carregar()
+    cache.guardar(
+        estado, "Jooble", "pedido|20",
+        [_vaga("DevOps Júnior", link="https://x.com.br/1").model_dump()],
+    )
+    chamadas = {"n": 0}
+
+    def nunca_chamada(pedido, limite):
+        chamadas["n"] += 1
+        return []
+
+    linhas = []
+    vagas = _fonte_estruturada(
+        "Jooble", nunca_chamada, "pedido", 20, estado, "pedido|20", True, linhas.append
+    )
+    assert chamadas["n"] == 0
+    assert len(vagas) == 1
+    assert "cache" in linhas[0]
+
+
+def test_fonte_sem_resposta_cai_no_cache_vencido():
+    estado = cache.carregar()
+    cache.guardar(
+        estado, "Adzuna", "pedido|20",
+        [_vaga("Cloud Engineer Jr", link="https://x.com.br/2").model_dump()],
+    )
+    chave = next(iter(estado["entradas"]))
+    vencido = datetime.now(timezone.utc) - timedelta(days=3)
+    estado["entradas"][chave]["gravado_em"] = vencido.isoformat(timespec="seconds")
+
+    linhas = []
+    vagas = _fonte_estruturada(
+        "Adzuna", lambda pedido, limite: [], "pedido", 20,
+        estado, "pedido|20", True, linhas.append,
+    )
+    assert len(vagas) == 1
+    assert "cache" in linhas[0]
+
+
+def test_sem_cache_forca_consulta_fresca_e_ignora_entradas_gravadas():
+    """--sem-cache tem que chamar a fonte E não servir entrada fresca nem vencida."""
+    estado = cache.carregar()
+    cache.guardar(estado, "Jooble", "pedido|20", [_vaga("Vaga Do Cache DevOps").model_dump()])
+    chamadas = {"n": 0}
+
+    def fonte_viva(pedido, limite):
+        chamadas["n"] += 1
+        return [_vaga("DevOps Júnior fresca", link="https://x.com.br/novo")]
+
+    vagas = _fonte_estruturada(
+        "Jooble", fonte_viva, "pedido", 20, estado, "pedido|20", False, lambda _: None
+    )
+    assert chamadas["n"] == 1                       # a fonte foi realmente consultada
+    assert vagas[0].titulo == "DevOps Júnior fresca"  # e não a entrada do cache
+
+    # Mesmo quando a fonte não responde, --sem-cache não pode cair no cache vencido.
+    vazio = _fonte_estruturada(
+        "Jooble", lambda pedido, limite: [], "pedido", 20,
+        estado, "pedido|20", False, lambda _: None,
+    )
+    assert vazio == []
+
+
+def test_cache_poda_entradas_alem_da_retencao():
+    """TTL decide o que é servido; sem poda o arquivo cresceria para sempre."""
+    estado = cache.carregar()
+    cache.guardar(estado, "Jooble", "recente", [{"t": 1}])
+    cache.guardar(estado, "Jooble", "antiga", [{"t": 2}])
+    muito_velha = datetime.now(timezone.utc) - timedelta(days=cache.DIAS_RETENCAO + 5)
+    estado["entradas"][cache._chave("Jooble", "antiga")]["gravado_em"] = (
+        muito_velha.isoformat(timespec="seconds")
+    )
+
+    assert cache.podar(estado) == 1
+    assert len(estado["entradas"]) == 1
+    assert cache.obter(estado, "Jooble", "recente")[0] == [{"t": 1}]
+
+
+def test_cache_poda_sozinho_ao_carregar(tmp_path, monkeypatch):
+    arquivo = tmp_path / "cache_busca.json"
+    monkeypatch.setattr(cache, "ARQUIVO", arquivo)
+    estado = cache.carregar()
+    cache.guardar(estado, "Adzuna", "antiga", [{"t": 1}])
+    chave = next(iter(estado["entradas"]))
+    velha = datetime.now(timezone.utc) - timedelta(days=cache.DIAS_RETENCAO + 1)
+    estado["entradas"][chave]["gravado_em"] = velha.isoformat(timespec="seconds")
+    cache.salvar(estado)
+
+    assert cache.carregar()["entradas"] == {}
+
+
+def test_esvaziar_zera_entradas_e_circuitos():
+    estado = cache.carregar()
+    cache.guardar(estado, "Jooble", "x", [{"t": 1}])
+    for _ in range(cache.FALHAS_PARA_ABRIR):
+        cache.registrar_falha(estado, "Google Search")
+
+    assert cache.esvaziar(estado) == 1
+    assert estado["entradas"] == {} and estado["circuitos"] == {}
+    assert cache.circuito_aberto(estado, "Google Search") is None
+
+
+def test_cli_expoe_limpar_cache():
+    parser = _montar_parser()
+    assert parser.parse_args(["limpar-cache"]).tudo is False
+    assert parser.parse_args(["limpar-cache", "--tudo"]).tudo is True
+
+
+def test_circuito_aberto_pula_a_chamada_ao_google_search(monkeypatch):
+    """Com a cota esgotada, insistir só gasta latência para receber o mesmo 429."""
+    estado = cache.carregar()
+    for _ in range(cache.FALHAS_PARA_ABRIR):
+        cache.registrar_falha(estado, "Google Search")
+    cache.salvar(estado)
+
+    chamadas = {"n": 0}
+
+    class ClienteContador:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, **kwargs):
+            chamadas["n"] += 1
+            raise RuntimeError("não deveria ter sido chamado")
+
+    monkeypatch.setattr("triagem.buscador._buscar_jooble", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._buscar_adzuna", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._busca_metasearch", lambda pedido, limite: ("", []))
+
+    linhas = []
+    buscar_vagas(ClienteContador(), "cv", "pedido", limite=3, log=linhas.append)
+    assert chamadas["n"] == 0
+    assert any("CIRCUITO ABERTO" in linha for linha in linhas)
+
+
+def test_adzuna_limita_idade_do_anuncio_na_propria_consulta(monkeypatch):
+    monkeypatch.setenv("ADZUNA_APP_ID", "a")
+    monkeypatch.setenv("ADZUNA_API_KEY", "b")
+    capturado = {}
+
+    class Resposta:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    def espiar(url, **kwargs):
+        capturado.update(kwargs.get("params", {}))
+        return Resposta()
+
+    monkeypatch.setattr("triagem.buscador.httpx.get", espiar)
+    _buscar_adzuna("DevOps Jr", 5)
+    assert capturado["max_days_old"] == DIAS_MAXIMOS_ANUNCIO
+
+
+# ---------------------------------------------------------------- dedup e enriquecimento
+
+def test_chave_dedup_cai_no_link_original_sem_redirect():
+    vaga = _vaga("DevOps Jr", link="https://x.com.br/1")
+    assert vaga.chave_dedup() == "https://x.com.br/1"
+    assert vaga.model_copy(update={"link_final": "https://y.com.br/2"}).chave_dedup() == (
+        "https://y.com.br/2"
+    )
+
+
+def test_texto_visivel_descarta_script_e_style():
+    html_bruto = "<html><script>var x=1</script><style>p{}</style><p>Vaga real</p></html>"
+    visivel = _texto_visivel(html_bruto)
+    assert "Vaga real" in visivel
+    assert "var x" not in visivel and "p{}" not in visivel
+
+
+def test_cli_aceita_novas_flags_de_busca():
+    parser = _montar_parser()
+    args = parser.parse_args(["buscar", "vagas", "--sem-cache", "--pesos", "d1=0.2"])
+    assert args.sem_cache is True and args.pesos == "d1=0.2"
+    assert parser.parse_args(["buscar", "--testar-fontes"]).testar_fontes is True
+    # Retrocompatibilidade do CLI continua valendo.
+    assert parser.parse_args(["analisar", "vagas.json"]).arquivo == "vagas.json"
+
+
+
+
+def test_mesma_vaga_em_duas_fontes_vira_uma_entrada(monkeypatch):
+    """Jooble e Adzuna redirecionam para o mesmo anúncio: 2 URLs, 1 vaga."""
+    jooble = _vaga("DevOps Júnior", link="https://jooble.org/jdp/123")
+    adzuna = _vaga("DevOps Júnior", link="https://www.adzuna.com.br/details/456")
+    destino = "https://empresa.com.br/carreiras/devops-junior"
+
+    monkeypatch.setattr(
+        "triagem.buscador._inspecionar_link",
+        lambda vaga: Inspecao(ativo=True, url_final=destino),
+    )
+    resultado = _validar_links([jooble, adzuna], 10)
+    assert len(resultado) == 1
+    assert resultado[0].chave_dedup() == destino
+
+
+def test_enriquecimento_substitui_descricao_truncada():
+    vaga = _vaga(
+        "DevOps Júnior",
+        descricao="Requisitos: experiencia com pipelines de entrega continua e Docker",
+    )
+    pagina = (
+        "<html><head><style>.x{color:red}</style></head><body><nav>menu</nav>"
+        "<p>Requisitos: experiencia com pipelines de entrega continua e Docker, "
+        "Kubernetes, Terraform e Azure. Diferenciais: certificacao AZ-900. "
+        "Beneficios: vale refeicao, plano de saude e auxilio home office. "
+        "Contratacao CLT com salario a combinar conforme experiencia do candidato.</p>"
+        "</body></html>"
+    )
+    enriquecida = _enriquecer_descricao(vaga, pagina)
+    assert enriquecida.descricao_completa is True
+    assert "Kubernetes" in enriquecida.descricao
+    assert "color:red" not in enriquecida.descricao
+
+
+def test_enriquecimento_recusa_pagina_sem_ancora():
+    """Sem a âncora, estaríamos colando o menu do portal no lugar dos requisitos."""
+    vaga = _vaga("DevOps Júnior", descricao="Requisitos muito especificos de pipeline e Docker")
+    pagina = "<html><body>" + ("Página institucional sobre a empresa. " * 40) + "</body></html>"
+    assert _enriquecer_descricao(vaga, pagina).descricao == vaga.descricao
+
+
+def test_empresa_sem_respaldo_no_texto_vira_desconhecida():
+    origem = _normalizar("Vaga de DevOps Júnior na Contoso Brasil, remoto.")
+    real = _ancorar_empresa(_vaga("DevOps Jr", empresa="Contoso Brasil"), origem)
+    inventada = _ancorar_empresa(_vaga("DevOps Jr", empresa="Sylision"), origem)
+    assert real.empresa == "Contoso Brasil" and real.confianca_empresa == "media"
+    assert inventada.empresa == "Desconhecida" and inventada.confianca_empresa == "baixa"
+
+
+# ---------------------------------------------------------------- robustez
+
+def test_timeout_em_todas_as_fontes_devolve_lista_vazia_sem_traceback(monkeypatch):
+    monkeypatch.setenv("JOOBLE_API_KEY", "k")
+    monkeypatch.setenv("ADZUNA_APP_ID", "a")
+    monkeypatch.setenv("ADZUNA_API_KEY", "b")
+
+    def estourou(*args, **kwargs):
+        raise httpx.ReadTimeout("tempo esgotado")
+
+    monkeypatch.setattr("triagem.buscador.httpx.get", estourou)
+    monkeypatch.setattr("triagem.buscador.httpx.post", estourou)
+    monkeypatch.setattr("triagem.buscador._busca_metasearch", lambda pedido, limite: ("", []))
+
+    class ClienteQueFalha:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, **kwargs):
+            raise httpx.ReadTimeout("tempo esgotado")
+
+    linhas = []
+    assert buscar_vagas(ClienteQueFalha(), "cv", "pedido", limite=3, log=linhas.append) == []
+    assert any("Jooble" in linha for linha in linhas)
+    assert any("Google Search" in linha for linha in linhas)
+
+
+def test_nenhuma_credencial_vaza_para_relatorio_historico_ou_csv(tmp_path, monkeypatch):
+    """Regressão de segurança: o app_id da Adzuna já vazou por `utm_source`."""
+    monkeypatch.setenv("ADZUNA_APP_ID", "APPID-SECRETO")
+    monkeypatch.setenv("ADZUNA_API_KEY", "APPKEY-SECRETO")
+
+    class Resposta:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [{
+                    "title": "DevOps Júnior",
+                    "company": {"display_name": "Empresa"},
+                    "location": {"display_name": "Curitiba"},
+                    "created": "2026-07-24T12:00:00Z",
+                    "redirect_url": (
+                        "https://www.adzuna.com.br/details/1"
+                        "?utm_medium=api&utm_source=APPID-SECRETO"
+                    ),
+                    "description": "Azure, Docker e CI/CD em pipelines de entrega contínua.",
+                }]
+            }
+
+    monkeypatch.setattr("triagem.buscador.httpx.get", lambda *a, **k: Resposta())
+    vagas = _buscar_adzuna("DevOps Jr", 5)
+
+    md = tmp_path / "rel.md"
+    csv_saida = tmp_path / "rel.csv"
+    exportar([pontuar(_analise(titulo=vagas[0].titulo), "id1")], str(md))
+    exportar([pontuar(_analise(titulo=vagas[0].titulo), "id1")], str(csv_saida))
+
+    monkeypatch.setattr(historico, "ARQUIVO", tmp_path / "historico.json")
+    hist = historico.carregar()
+    historico.registrar(hist, pontuar(_analise(), "id1"), vagas[0].model_dump_json())
+    historico.salvar(hist)
+
+    artefatos = [md, csv_saida, tmp_path / "historico.json"]
+    for artefato in artefatos:
+        conteudo = artefato.read_text(encoding="utf-8-sig")
+        assert "APPID-SECRETO" not in conteudo
+        assert "APPKEY-SECRETO" not in conteudo
+
+
+# ---------------------------------------------------------------- pesos
+
+def test_pesos_personalizados_mudam_o_score():
+    pesos = parse_pesos("d1=0.15,d2=0.30,d3=0.25,d4=0.15,d5=0.15")
+    # 9*.15 + 10*.30 + 9*.25 + 9*.15 + 10*.15 = 9.45 -> 94.5
+    assert pontuar(_analise(), "id", pesos).score_final == 94.5
+    assert pontuar(_analise(), "id").score_final == 93.5  # padrão intacto
+
+
+@pytest.mark.parametrize(
+    "texto,erro",
+    [
+        ("d1=0.5", "somar 1.0"),
+        ("d9=0.2,d1=0.1", "desconhecida"),
+        ("d1=muito", "inválido"),
+    ],
+)
+def test_pesos_invalidos_dao_erro_claro(texto, erro):
+    with pytest.raises(ValueError, match=erro):
+        parse_pesos(texto)
 
 
 def test_prefiltro_remove_senior_e_deduplica_semanticamente():
     def vaga(titulo, empresa, link, descricao):
-        from triagem.schema import VagaEncontrada
-
         return VagaEncontrada(
             titulo=titulo,
             empresa=empresa,
@@ -408,6 +1089,19 @@ def test_historico_buscar_prefixo_ambiguo_ou_inexistente(tmp_path, monkeypatch):
         historico.buscar(hist, "zz")
 
 
+def test_historico_respeita_triagem_historico_definido_no_env(tmp_path, monkeypatch):
+    """O módulo é importado antes do load_dotenv(); sem re-resolver, a variável era ignorada."""
+    alvo = tmp_path / "outro.json"
+    monkeypatch.setenv("TRIAGEM_HISTORICO", str(alvo))
+    monkeypatch.setattr(historico, "ARQUIVO", tmp_path / "errado.json")
+    historico.aplicar_config_do_ambiente()
+    assert historico.ARQUIVO == alvo
+
+    monkeypatch.delenv("TRIAGEM_HISTORICO")
+    historico.aplicar_config_do_ambiente()
+    assert historico.ARQUIVO == historico.PADRAO
+
+
 def test_historico_corrompido_da_erro_claro(tmp_path, monkeypatch):
     arquivo = tmp_path / "historico.json"
     arquivo.write_text("{", encoding="utf-8")
@@ -440,6 +1134,13 @@ def test_exportar_csv(tmp_path):
     linhas = caminho.read_text(encoding="utf-8-sig").splitlines()
     assert linhas[0].startswith("id,score,empresa")
     assert "TechCorp" in linhas[1]
+
+
+def test_exportar_csv_neutraliza_formula(tmp_path):
+    caminho = tmp_path / "rel.csv"
+    exportar([pontuar(_analise(empresa="=1+1", titulo="@SUM(A1)"), "id1")], str(caminho))
+    conteudo = caminho.read_text(encoding="utf-8-sig")
+    assert ",'=1+1,'@SUM(A1)," in conteudo
 
 
 def test_exportar_extensao_invalida(tmp_path):

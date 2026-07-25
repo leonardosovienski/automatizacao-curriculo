@@ -1,5 +1,7 @@
 """Score composto e regras determinísticas que não dependem do modelo."""
 
+from typing import Dict, Optional
+
 from .schema import AnaliseVaga, VagaPontuada
 
 PESOS = {
@@ -14,8 +16,39 @@ PESOS = {
 D2_POR_REGIME = {"remoto": 10, "hibrido": 8, "presencial": 6}
 
 
-def pontuar(analise: AnaliseVaga, vid: str = "") -> VagaPontuada:
+def parse_pesos(texto: str) -> Dict[str, float]:
+    """Interpreta `d1=0.15,d2=0.30,...` do CLI e valida que a soma é 1.0."""
+    apelidos = {
+        "d1": "d1_crescimento",
+        "d2": "d2_regime_localizacao",
+        "d3": "d3_stack_fit",
+        "d4": "d4_ingles",
+        "d5": "d5_nivel_real",
+    }
+    pesos = dict(PESOS)
+    for parte in texto.split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        chave, _, valor = parte.partition("=")
+        nome = apelidos.get(chave.strip().lower())
+        if not nome:
+            raise ValueError(f"Dimensão desconhecida em --pesos: '{chave.strip()}'. Use d1..d5.")
+        try:
+            pesos[nome] = float(valor)
+        except ValueError as e:
+            raise ValueError(f"Peso inválido para {chave.strip()}: '{valor}'.") from e
+    total = sum(pesos.values())
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(f"Os pesos devem somar 1.0 (informado: {total:.3f}).")
+    return pesos
+
+
+def pontuar(
+    analise: AnaliseVaga, vid: str = "", pesos: Optional[Dict[str, float]] = None
+) -> VagaPontuada:
     """Devolve a vaga pontuada; score_final fica None quando descartada."""
+    pesos = pesos or PESOS
     # Evita que a regra determinística altere o objeto retornado pela API ou
     # reutilizado pelo chamador.
     analise = analise.model_copy(deep=True)
@@ -29,11 +62,11 @@ def pontuar(analise: AnaliseVaga, vid: str = "") -> VagaPontuada:
         notas.d2_regime_localizacao.justificativa += " (nota ajustada pela regra fixa do regime)"
 
     score = (
-        notas.d1_crescimento.nota * PESOS["d1_crescimento"]
-        + notas.d2_regime_localizacao.nota * PESOS["d2_regime_localizacao"]
-        + notas.d3_stack_fit.nota * PESOS["d3_stack_fit"]
-        + notas.d4_ingles.nota * PESOS["d4_ingles"]
-        + notas.d5_nivel_real.nota * PESOS["d5_nivel_real"]
+        notas.d1_crescimento.nota * pesos["d1_crescimento"]
+        + notas.d2_regime_localizacao.nota * pesos["d2_regime_localizacao"]
+        + notas.d3_stack_fit.nota * pesos["d3_stack_fit"]
+        + notas.d4_ingles.nota * pesos["d4_ingles"]
+        + notas.d5_nivel_real.nota * pesos["d5_nivel_real"]
     ) * 10  # 0-10 ponderado -> 0-100
 
     return VagaPontuada(id=vid, analise=analise, score_final=round(score, 1))

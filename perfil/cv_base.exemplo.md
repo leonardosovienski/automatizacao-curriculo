@@ -4,12 +4,20 @@
 > Substitua todos os `[PREENCHA: ...]` por dados reais — o gerador NÃO inventa nada
 > que não esteja aqui, então quanto mais completo, melhor o material gerado.
 
+> **Dados que não devem sair da sua máquina** (CPF, RG, endereço, telefone) podem ficar
+> entre `<!-- PRIVADO -->` e `<!-- /PRIVADO -->`. O conteúdo desses blocos é removido
+> antes de qualquer chamada à API do Gemini, tanto no `cv` quanto no `buscar`.
+
 ## Dados
 
 - Nome: [PREENCHA: nome completo]
 - Localização: Curitiba/Araucária, Paraná, Brasil
 - Contato: [PREENCHA: e-mail pessoal, LinkedIn, GitHub]
 - Inglês: Fluente (TOEIC 860)
+
+<!-- PRIVADO -->
+- [PREENCHA, se quiser mantê-los só localmente: CPF, RG, endereço completo, telefone]
+<!-- /PRIVADO -->
 
 ## Objetivo
 
@@ -29,7 +37,7 @@ remoto), ou freelance internacional remoto.
 ## Projetos
 
 - [PREENCHA: projetos pessoais/acadêmicos relevantes — stack, o que faz, link do GitHub.
-  Ex.: este projeto de triagem de vagas com a API da Anthropic (Python, structured outputs)]
+  Ex.: este projeto de triagem de vagas com a API do Google Gemini (Python, structured outputs)]
 
 ## Formação
 
