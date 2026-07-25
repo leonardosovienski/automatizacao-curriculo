@@ -1,0 +1,23 @@
+[
+  {
+    "titulo": "Estágio em DevOps",
+    "empresa": "TechCorp Brasil",
+    "descricao": "Buscamos estagiário de DevOps para atuar 100% remoto. Stack: Azure DevOps, GitHub Actions, Docker, Terraform. Empresa multinacional, reuniões diárias em inglês com time nos EUA. Programa de estágio com mentoria estruturada e plano de efetivação.",
+    "link": "https://example.com/vaga/123",
+    "origem": "linkedin"
+  },
+  {
+    "titulo": "Desenvolvedor C# Júnior",
+    "empresa": "Indústria XYZ",
+    "descricao": "Vaga híbrida em São Paulo (3x por semana no escritório). Desenvolvimento de sistemas internos em C#/.NET e SQL Server. Exige 1 ano de experiência.",
+    "link": "https://example.com/vaga/456",
+    "origem": "gupy"
+  },
+  {
+    "titulo": "Analista DevSecOps Júnior",
+    "empresa": "Banco Alfa",
+    "descricao": "Híbrido em Curitiba/PR (2x por semana). SonarQube, pipelines Azure DevOps, análise de vulnerabilidades, Key Vault. Desejável inglês intermediário. Aceita recém-formados ou estágio convertido. Exige 2 anos de experiência em segurança.",
+    "link": "https://example.com/vaga/789",
+    "origem": "indeed"
+  }
+]

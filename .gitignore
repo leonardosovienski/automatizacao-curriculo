@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+historico.json
+historico.json.bak
+relatorio*.md
+relatorio*.csv
+candidatura*.md
+resultados_busca*.md
+busca_automatica.md
+busca_jooble.md
+.test-run*/
+.ruff_cache/
+*.egg-info/
+.smoke/
+.simulacao/
+# CV real contém telefone/e-mail pessoais; versione só o template .exemplo.md
+perfil/cv_base.md

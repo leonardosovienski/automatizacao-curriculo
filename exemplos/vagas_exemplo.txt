@@ -1,0 +1,9 @@
+Vaga: Platform Engineer Intern
+Empresa: GlobalSoft
+Local: Remoto (Brasil)
+Descrição: Estágio em Platform Engineering. Backstage, Kubernetes, GitHub Actions, Python. Time distribuído, documentação e dailies em inglês. Link: https://example.com/vaga/abc
+---
+Vaga: Desenvolvedor Java Sênior
+Empresa: ConsultCo
+Local: Presencial em Florianópolis/SC
+Descrição: 5+ anos de experiência em Java, Spring Boot e microsserviços. Link: https://example.com/vaga/def

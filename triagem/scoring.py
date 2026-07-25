@@ -1,0 +1,39 @@
+"""Score composto e regras determinísticas que não dependem do modelo."""
+
+from .schema import AnaliseVaga, VagaPontuada
+
+PESOS = {
+    "d1_crescimento": 0.30,
+    "d2_regime_localizacao": 0.25,
+    "d3_stack_fit": 0.20,
+    "d4_ingles": 0.15,
+    "d5_nivel_real": 0.10,
+}
+
+# Regra fixa do spec — sobrescreve a nota do modelo para garantir consistência
+D2_POR_REGIME = {"remoto": 10, "hibrido": 8, "presencial": 6}
+
+
+def pontuar(analise: AnaliseVaga, vid: str = "") -> VagaPontuada:
+    """Devolve a vaga pontuada; score_final fica None quando descartada."""
+    # Evita que a regra determinística altere o objeto retornado pela API ou
+    # reutilizado pelo chamador.
+    analise = analise.model_copy(deep=True)
+    if analise.descartada or analise.notas is None:
+        return VagaPontuada(id=vid, analise=analise)
+
+    notas = analise.notas
+    nota_d2 = D2_POR_REGIME[analise.regime]
+    if notas.d2_regime_localizacao.nota != nota_d2:
+        notas.d2_regime_localizacao.nota = nota_d2
+        notas.d2_regime_localizacao.justificativa += " (nota ajustada pela regra fixa do regime)"
+
+    score = (
+        notas.d1_crescimento.nota * PESOS["d1_crescimento"]
+        + notas.d2_regime_localizacao.nota * PESOS["d2_regime_localizacao"]
+        + notas.d3_stack_fit.nota * PESOS["d3_stack_fit"]
+        + notas.d4_ingles.nota * PESOS["d4_ingles"]
+        + notas.d5_nivel_real.nota * PESOS["d5_nivel_real"]
+    ) * 10  # 0-10 ponderado -> 0-100
+
+    return VagaPontuada(id=vid, analise=analise, score_final=round(score, 1))

@@ -1,0 +1,26 @@
+[
+  {
+    "titulo": "Desenvolvedor(a) C#/.NET Júnior",
+    "empresa": "Sylision",
+    "link": "https://casado.dev/vaga/desenvolvedora-cnet-junior-100-remoto",
+    "origem": "Casa do Dev",
+    "publicada_em": "2026-07-03",
+    "descricao": "Vaga 100% remota para profissionais no Brasil ou Portugal, nível Júnior. Contratação CLT ou PJ, conforme negociação. Faixa informada de R$ 3.500 a R$ 6.500 mensais. Atuação em projetos de desenvolvimento backend para empresas parceiras. Requer conhecimento técnico em C# e .NET. O processo usa IA para analisar o CV e um headhunter pode entrar em contato em caso de match."
+  },
+  {
+    "titulo": "Desenvolvedor(a) Back-end .NET - Júnior",
+    "empresa": "Code n' App",
+    "link": "https://remotar.com.br/job/136410/code-n%27-app/desenvolvedor%28a%29-back-end-.net-junior",
+    "origem": "Remotar / Gupy",
+    "atualizada_em": "2026-05-05",
+    "descricao": "Vaga CLT Júnior, anunciada como 100% remota. Criação e evolução de sistemas web, APIs e integrações em .NET e SQL Server, com metodologias ágeis e apoio do time. Aceita ensino superior cursando ou concluído em TI e experiência acadêmica, projetos pessoais ou profissional. Requer conhecimento em .NET C#, banco relacional e SQL Server, APIs REST, Git, lógica de programação e vontade de aprender. Oferece horário flexível, auxílio home office, Udemy e benefícios."
+  },
+  {
+    "titulo": "Desenvolvedor Back End Júnior C# .NET",
+    "empresa": "VR",
+    "link": "https://remotar.com.br/job/140620/vr/desenvolvedor-back-end-junior-c-.net",
+    "origem": "Remotar / Inhire",
+    "atualizada_em": "2026-06-19",
+    "descricao": "Vaga Júnior, 100% remota e marcada como exclusiva ou direcionada a PcD. Responsabilidades com aplicações .NET, APIs, segurança, infraestrutura aplicacional, banco de dados e documentação. Exige ensino superior completo, domínio de C#, .NET Core e APIs REST, experiência com SQL Server, segurança de aplicações, testes, Azure, Git, Azure DevOps, Docker e pipelines CI/CD. Oferece benefícios e auxílio home office."
+  }
+]
