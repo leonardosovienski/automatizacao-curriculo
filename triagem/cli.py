@@ -175,6 +175,12 @@ def _cmd_buscar(args) -> int:
 
     try:
         cv_base = carregar_cv_base()
+    except (FileNotFoundError, ValueError) as e:
+        # Erro de CV não é erro de busca: mensagem própria para não confundir.
+        print(f"Erro: {e}")
+        return 1
+
+    try:
         print(f"Buscando até {args.limite} vaga(s) atuais na web para: {args.pedido}\n")
         vagas = buscar_vagas(
             client, cv_base, args.pedido, args.limite, args.modelo,
@@ -211,9 +217,9 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
             return 1
         try:
             if args.stdin:
-                textos = carregar_vagas(sys.stdin.read())
+                textos = carregar_vagas(sys.stdin.read(), log=print)
             elif args.arquivo:
-                textos = carregar_arquivo(args.arquivo)
+                textos = carregar_arquivo(args.arquivo, log=print)
             else:
                 print("Informe um arquivo ou use --stdin.")
                 return 1
@@ -233,7 +239,10 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
     for indice, texto in enumerate(textos):
         vid = historico.gerar_id(chaves[indice] if chaves else texto)
         if vid in vistos:
-            continue  # vaga duplicada dentro do próprio input
+            # Antes sumia em silêncio: o relatório dizia "TOTAL ANALISADAS: 1"
+            # para um arquivo de 3 itens, sem explicar o que houve com os outros.
+            print(f"  [{vid}] duplicada no input — pulando.")
+            continue
         vistos.add(vid)
         entrada = hist.get(vid)
         if entrada and entrada.get("analise") and not args.reanalisar:
@@ -256,7 +265,7 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
         try:
             client = criar_cliente()
         except Exception as e:
-            print(f"Erro ao iniciar cliente da API: {e}")
+            print(f"Erro ao iniciar cliente da API: {_redigir_segredos(str(e))}")
             return 1
         print(f"Analisando {len(pendentes)} vaga(s) nova(s) com {MODELOS[args.modelo]}"
               f" ({args.paralelo} em paralelo)...\n")
@@ -308,7 +317,7 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
     if falhas:
         print(f"\nAtenção: {len(falhas)} vaga(s) não analisadas mesmo após retry:")
         for vid, _, e in falhas:
-            print(f"  [{vid}] {type(e).__name__}: {e}")
+            print(f"  [{vid}] {type(e).__name__}: {_redigir_segredos(str(e))}")
         print("Rode novamente para reprocessar (as já analisadas serão puladas pelo histórico).")
     return 0
 
@@ -416,7 +425,8 @@ def _cmd_cv(args) -> int:
 
     try:
         cv_base = carregar_cv_base()
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
+        # ValueError = marcador PRIVADO malformado; abortar é intencional.
         print(f"Erro: {e}")
         return 1
     if "[preencha" in cv_base.lower():
@@ -428,7 +438,7 @@ def _cmd_cv(args) -> int:
     try:
         client = criar_cliente()
     except Exception as e:
-        print(f"Erro ao iniciar cliente da API: {e}")
+        print(f"Erro ao iniciar cliente da API: {_redigir_segredos(str(e))}")
         return 1
     analise = entrada.get("analise", {})
     print(f"Gerando material para [{vid}] {analise.get('empresa') or '?'} - "
@@ -437,7 +447,7 @@ def _cmd_cv(args) -> int:
     try:
         material = gerar_material(client, cv_base, entrada.get("texto", ""), analise, args.modelo)
     except Exception as e:
-        print(f"Erro ao gerar material pela API ({type(e).__name__}): {e}")
+        print(f"Erro ao gerar material pela API ({type(e).__name__}): {_redigir_segredos(str(e))}")
         return 1
     print(material)
 

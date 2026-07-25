@@ -22,3 +22,5 @@ busca_jooble.md
 .simulacao/
 # CV real contém telefone/e-mail pessoais; versione só o template .exemplo.md
 perfil/cv_base.md
+# Worktrees e estado de sessão do Claude Code: pertencem a outro repositório.
+.claude/

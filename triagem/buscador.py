@@ -111,9 +111,39 @@ TERMOS_RESTRICAO_EXTERIOR = (
     "unable to sponsor",
     "not able to sponsor",
 )
+
+# Países cuja exigência de residência/autorização exclui alguém no Brasil.
+# Brasil/LATAM ficam fora de propósito: "authorized to work in Brazil" não reprova.
+_PAISES_EXTERIOR = (
+    r"(?:the\s+)?(?:us|usa|u\.s\.?|united\s+states|america|uk|united\s+kingdom|eu|"
+    r"european\s+union|europe|emea|canada|australia|germany|france|spain|ireland|"
+    r"netherlands|portugal|india|singapore|japan)"
+)
+# A lista literal acima só pega a frase exata. Estes padrões cobrem as variações
+# equivalentes ("right to work in the UK", "cannot sponsor work visas"), que antes
+# passavam inteiras quando o host não era um portal conhecido.
+PADROES_RESTRICAO_EXTERIOR = tuple(re.compile(p) for p in (
+    rf"(?:authorized|authorised|eligible)\s+to\s+work\s+in\s+{_PAISES_EXTERIOR}",
+    rf"right\s+to\s+work\s+in\s+{_PAISES_EXTERIOR}",
+    rf"{_PAISES_EXTERIOR}\s+work\s+(?:authorization|authorisation|permit)",
+    rf"(?:must|should)\s+(?:be\s+)?(?:currently\s+)?"
+    rf"(?:located|based|residing|reside|live|living)\s+(?:in|within)\s+"
+    rf"(?:the\s+)?(?:continental\s+)?{_PAISES_EXTERIOR}",
+    rf"candidates?\s+(?:residing|located|based|living)\s+in\s+{_PAISES_EXTERIOR}",
+    rf"must\s+hold\s+{_PAISES_EXTERIOR}\s+citizenship",
+    rf"{_PAISES_EXTERIOR}\s+citizens?\s+only",
+    r"(?:cannot|can\s+not|do\s+not|does\s+not|will\s+not|unable\s+to|not\s+able\s+to)"
+    r"\s+sponsor",
+    r"sponsorship\s+(?:is\s+)?not\s+(?:provided|available|offered|possible)",
+    r"no\s+(?:visa\s+|work\s+)?sponsorship",
+))
 MARCADORES_REMOTO = (
     "remoto",
     "remota",
+    # Plurais: fontes escrevem "Vagas remotas" no campo de localização, e sem
+    # eles a vaga era tratada como se a praça declarada fosse presencial.
+    "remotos",
+    "remotas",
     "remotamente",
     "remote",
     "home office",
@@ -122,6 +152,13 @@ MARCADORES_REMOTO = (
     "anywhere",
     "100% remoto",
 )
+# "Não oferecemos trabalho remoto" contém a palavra "remoto" e, sem olhar para a
+# negação, provava que a vaga era remota — exatamente ao contrário do que o
+# anúncio diz. Deliberadamente fora da lista: "no", que em português é preposição
+# ("no modelo remoto") e reprovaria vaga remota de verdade.
+TERMOS_NEGACAO = ("nao", "sem", "nunca", "nenhum", "nenhuma", "not", "without", "exceto")
+# Quantas palavras antes do marcador ainda contam como negação dele.
+JANELA_NEGACAO = 4
 # Anúncios que não são uma vaga: cadastro de currículo, pool de talentos.
 TERMOS_NAO_VAGA = (
     "banco de talentos",
@@ -175,6 +212,20 @@ HOSTS_NAO_CANONICOS = (
     "bit.ly",
     "tinyurl.com",
     "lnkd.in",
+    # Encurtadores: escondem o destino real do pré-filtro. A lista nunca fica
+    # completa, por isso o host também é reavaliado depois de seguir o redirect
+    # (ver _validar_links) — a lista só evita gastar uma requisição à toa.
+    "ow.ly",
+    "buff.ly",
+    "is.gd",
+    "rb.gy",
+    "shorturl.at",
+    "cutt.ly",
+    "rebrand.ly",
+    "goo.gl",
+    "s.id",
+    "tiny.cc",
+    "shorte.st",
 )
 
 PORTAIS_BRASILEIROS = (
@@ -234,6 +285,10 @@ PREFIXOS_RASTREIO = ("utm_",)
 
 Log = Callable[[str], None]
 
+# Mesmo conjunto que `_normalizar` preserva (o `[^a-z0-9+#.]` da regex). Como
+# frozenset porque `_normalizar_com_indices` testa caractere a caractere.
+CARACTERES_MANTIDOS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789+#.")
+
 
 def _sem_log(_: str) -> None:
     return None
@@ -249,6 +304,40 @@ def _normalizar(texto: str) -> str:
 
 def _contem_termo(texto: str, termos: tuple[str, ...]) -> bool:
     return any(re.search(rf"(?<!\w){re.escape(termo)}(?!\w)", texto) for termo in termos)
+
+
+def _normalizar_com_indices(texto: str) -> tuple[str, list[int]]:
+    """`_normalizar`, mas devolvendo o índice de origem de cada caractere.
+
+    `_normalizar` remove acentos e pontuação e colapsa espaços, então o texto
+    normalizado é mais curto que o original e os índices dos dois NÃO coincidem.
+    Quem precisa localizar algo no texto normalizado e depois recortar o texto
+    original tem que traduzir a posição — sem isso o recorte sai deslocado.
+    """
+    saida: list[str] = []
+    indices: list[int] = []
+    separador_pendente = False
+    for posicao, caractere in enumerate(texto or ""):
+        minusculo = caractere.lower()
+        if minusculo in CARACTERES_MANTIDOS:
+            # Caminho rápido: para ASCII a decomposição NFKD é a identidade, então
+            # a chamada a unicodedata só queimaria tempo. É a esmagadora maioria
+            # dos caracteres de uma página, e o loop roda sobre até 400 KB.
+            base = minusculo
+        else:
+            decomposto = unicodedata.normalize("NFKD", caractere)
+            base = "".join(c for c in decomposto if not unicodedata.combining(c)).lower()
+        for convertido in base:
+            if convertido in CARACTERES_MANTIDOS:
+                if separador_pendente and saida:
+                    saida.append(" ")
+                    indices.append(posicao)
+                separador_pendente = False
+                saida.append(convertido)
+                indices.append(posicao)
+            else:
+                separador_pendente = True
+    return "".join(saida), indices
 
 
 def _texto_limpo(bruto: str) -> str:
@@ -347,13 +436,14 @@ def _pontuacao_preliminar(vaga: VagaEncontrada) -> int:
     return pontos
 
 
-def _host_de_anuncio(vaga: VagaEncontrada) -> bool:
+def _host_canonico(url: str) -> bool:
     """False para post de rede social, encurtador e agregador de link.
 
     O candidato precisa cair na página de candidatura, não num tweet que fala
-    sobre a vaga.
+    sobre a vaga. Recebe a URL solta porque a checagem roda duas vezes: no
+    pré-filtro (sobre o link anunciado) e depois de seguir o redirect.
     """
-    partes = urlsplit(vaga.link)
+    partes = urlsplit(url or "")
     host = partes.netloc.lower()
     host = host[4:] if host.startswith("www.") else host
     if any(host == ruim or host.endswith(f".{ruim}") for ruim in HOSTS_NAO_CANONICOS):
@@ -362,6 +452,10 @@ def _host_de_anuncio(vaga: VagaEncontrada) -> bool:
     if "linkedin.com" in host and "/jobs/" not in partes.path:
         return False
     return True
+
+
+def _host_de_anuncio(vaga: VagaEncontrada) -> bool:
+    return _host_canonico(vaga.link)
 
 
 def _area_alvo(vaga: VagaEncontrada) -> bool:
@@ -386,13 +480,39 @@ def _anuncio_recente(vaga: VagaEncontrada) -> bool:
     return idade is None or idade <= DIAS_MAXIMOS_ANUNCIO
 
 
-def _local_declarado_incompativel(vaga: VagaEncontrada) -> bool:
-    """A fonte declara uma praça específica fora de Curitiba/Araucária e o anúncio
-    não diz em lugar nenhum que é remoto.
+def _remoto_afirmado(conteudo: str) -> bool:
+    """True só quando alguma menção a trabalho remoto NÃO está negada.
 
-    Existe porque o modelo já classificou como `remoto` uma vaga cujo campo
-    estruturado da Adzuna dizia "Recife, Pernambuco" — e a regra fixa do D2 então
-    premiava o erro com 10/10.
+    `conteudo` já vem normalizado. Uma única menção afirmativa basta; o que não
+    pode acontecer é a frase "não oferecemos trabalho remoto" contar como prova
+    de que a vaga é remota.
+    """
+    for marcador in MARCADORES_REMOTO:
+        for achado in re.finditer(rf"(?<!\w){re.escape(marcador)}(?!\w)", conteudo):
+            anteriores = conteudo[: achado.start()].split()[-JANELA_NEGACAO:]
+            if any(palavra in TERMOS_NEGACAO for palavra in anteriores):
+                continue
+            # "no remote work": em inglês "no" nega; em português é preposição,
+            # então só vale quando é a palavra imediatamente anterior.
+            if anteriores and anteriores[-1] == "no" and marcador in ("remote", "anywhere"):
+                continue
+            return True
+    return False
+
+
+def _local_declarado_incompativel(vaga: VagaEncontrada) -> bool:
+    """A fonte declara uma praça específica fora de Curitiba/Araucária.
+
+    **A praça declarada vence o texto do anúncio.** Só o próprio campo de
+    localização pode dizer que a vaga é remota — a descrição, não. O modelo já
+    classificou como `remoto` uma vaga cujo campo estruturado da Adzuna dizia
+    "Recife, Pernambuco", e a regra fixa do D2 então premiava o erro com 10/10.
+    Deixar a descrição desempatar reabria essa porta: bastava a palavra "remoto"
+    aparecer em qualquer canto do anúncio.
+
+    O preço é assumido: vaga genuinamente remota que a fonte carimba com a
+    cidade-sede da empresa é reprovada. Falso negativo é mais barato que enviar o
+    candidato para uma vaga presencial em outro estado.
     """
     local = _normalizar(vaga.localizacao)
     if not local or _contem_termo(local, CIDADES_ACEITAS):
@@ -400,15 +520,23 @@ def _local_declarado_incompativel(vaga: VagaEncontrada) -> bool:
     especifico = [palavra for palavra in local.split() if palavra not in LOCAL_GENERICO]
     if not especifico:
         return False  # "Brasil", "Remoto" — não há praça para reprovar
-    conteudo = _normalizar(f"{vaga.titulo} {vaga.descricao} {vaga.localizacao}")
-    return not _contem_termo(conteudo, MARCADORES_REMOTO)
+    # "São Paulo, SP (Remoto)" é a fonte declarando remoto, e vale. Já
+    # "São Paulo (não remoto)" continua reprovando, via _remoto_afirmado.
+    return not _remoto_afirmado(local)
+
+
+def _restricao_de_residencia(conteudo: str) -> bool:
+    """A vaga exige residência/autorização de trabalho fora do Brasil."""
+    if _contem_termo(conteudo, TERMOS_RESTRICAO_EXTERIOR):
+        return True
+    return any(padrao.search(conteudo) for padrao in PADROES_RESTRICAO_EXTERIOR)
 
 
 def _localizacao_compativel(vaga: VagaEncontrada) -> bool:
     """Barra vaga que exige residência fora do Brasil sem abertura explícita."""
     host = urlsplit(vaga.link).netloc.lower()
     conteudo = _normalizar(f"{vaga.titulo} {vaga.descricao} {vaga.localizacao}")
-    if _contem_termo(conteudo, TERMOS_RESTRICAO_EXTERIOR):
+    if _restricao_de_residencia(conteudo):
         return _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
     if host.endswith(".br") or any(portal in host for portal in PORTAIS_BRASILEIROS):
         return True
@@ -518,11 +646,15 @@ def _enriquecer_descricao(vaga: VagaEncontrada, texto_pagina: str) -> VagaEncont
         return vaga
     # Âncora: as primeiras palavras da descrição da API precisam existir na página.
     inicio = " ".join(_normalizar(vaga.descricao).split()[:6])
-    normalizado = _normalizar(visivel)
+    normalizado, indices = _normalizar_com_indices(visivel)
     if inicio and inicio not in normalizado:
         return vaga
-    posicao = normalizado.find(inicio)
-    trecho = visivel[max(0, posicao) : max(0, posicao) + MAX_DESCRICAO_ENRIQUECIDA]
+    encontrado = normalizado.find(inicio)
+    # A posição vem do texto normalizado; o recorte é no texto visível. Traduzir
+    # é obrigatório: sem isso o corte começa antes da âncora e cola o menu do
+    # portal no lugar dos requisitos.
+    posicao = indices[encontrado] if 0 <= encontrado < len(indices) else 0
+    trecho = visivel[posicao : posicao + MAX_DESCRICAO_ENRIQUECIDA]
     if len(trecho) <= len(vaga.descricao):
         return vaga
     return vaga.model_copy(update={"descricao": trecho, "descricao_completa": True})
@@ -541,8 +673,15 @@ def _validar_links(
     enriquecidas = 0
     vistos: set[str] = set()
     duplicadas = 0
+    redirecionadas = 0
     for vaga, inspecao in zip(vagas, inspecoes, strict=True):
         if not inspecao.ativo:
+            continue
+        # O pré-filtro julgou o link anunciado; o redirect pode terminar num post
+        # de rede social ou num encurtador que a lista não conhecia. Sem esta
+        # segunda checagem, um encurtador fora da lista entrega um tweet.
+        if inspecao.url_final and not _host_canonico(inspecao.url_final):
+            redirecionadas += 1
             continue
         atualizada = vaga.model_copy(update={"link_final": inspecao.url_final})
         antes = len(atualizada.descricao)
@@ -557,8 +696,11 @@ def _validar_links(
         vistos.add(chave)
         ativas.append(atualizada)
 
-    if len(ativas) + duplicadas != len(vagas):
-        log(f"  link inativo/expirado: {len(vagas) - len(ativas) - duplicadas} descartada(s)")
+    inativas = len(vagas) - len(ativas) - duplicadas - redirecionadas
+    if inativas:
+        log(f"  link inativo/expirado: {inativas} descartada(s)")
+    if redirecionadas:
+        log(f"  redirect terminou fora de página de anúncio: {redirecionadas} descartada(s)")
     if duplicadas:
         log(f"  mesma vaga em fontes diferentes: {duplicadas} mesclada(s)")
     if enriquecidas:
@@ -571,7 +713,9 @@ def _selecionar_candidatas(
 ) -> list[VagaEncontrada]:
     """Remove lixo/senioridade/vaga vencida, deduplica e ordena antes da triagem cara."""
     cortes = {"area": 0, "senioridade": 0, "antiga": 0, "local": 0, "nao_anuncio": 0, "duplicada": 0}
-    candidatas = []
+    # Guarda a pontuação junto da vaga: ela já foi calculada para decidir o corte e
+    # recalculá-la na ordenação repetia todo o trabalho de normalização e regex.
+    pontuadas: list[tuple[int, VagaEncontrada]] = []
     for vaga in vagas:
         if not _host_de_anuncio(vaga):
             cortes["nao_anuncio"] += 1
@@ -579,7 +723,8 @@ def _selecionar_candidatas(
         if not _area_alvo(vaga):
             cortes["area"] += 1
             continue
-        if _pontuacao_preliminar(vaga) < 8:
+        pontos = _pontuacao_preliminar(vaga)
+        if pontos < 8:
             cortes["senioridade"] += 1
             continue
         if not _anuncio_recente(vaga):
@@ -588,16 +733,16 @@ def _selecionar_candidatas(
         if _local_declarado_incompativel(vaga) or not _localizacao_compativel(vaga):
             cortes["local"] += 1
             continue
-        candidatas.append(vaga)
+        pontuadas.append((pontos, vaga))
 
-    candidatas.sort(
-        key=lambda vaga: (
-            _pontuacao_preliminar(vaga),
-            -(_dias_desde(vaga.publicada_em) if _dias_desde(vaga.publicada_em) is not None else 999),
-            len(vaga.descricao),
-        ),
-        reverse=True,
-    )
+    def _ordem(par: tuple[int, VagaEncontrada]):
+        pontos, vaga = par
+        # `_dias_desde` era chamada duas vezes por vaga só para testar contra None.
+        idade = _dias_desde(vaga.publicada_em)
+        return (pontos, -(idade if idade is not None else 999), len(vaga.descricao))
+
+    pontuadas.sort(key=_ordem, reverse=True)
+    candidatas = [vaga for _, vaga in pontuadas]
     unicas = []
     urls_vistas = set()
     vagas_vistas = set()
@@ -1072,7 +1217,11 @@ def buscar_vagas(
     # não ocupem as posições que o usuário pediu.
     limite_coleta = min(50, max(20, limite * 5))
 
-    estado_cache = cache.carregar() if usar_cache else {"entradas": {}, "circuitos": {}}
+    # O estado real é sempre carregado, inclusive com --sem-cache: a flag manda
+    # ignorar RESULTADOS gravados, não esquecer que a cota do Google Search está
+    # esgotada. Com um dicionário vazio aqui, --sem-cache chamava a fonte no 429
+    # a cada execução e nunca registrava a falha.
+    estado_cache = cache.carregar()
     consulta_cache = f"{pedido}|{limite_coleta}"
 
     vagas: list[VagaEncontrada] = []
@@ -1160,11 +1309,12 @@ achados com links.
         except Exception as e:  # noqa: BLE001
             registrar(f"  Normalização do texto livre falhou ({type(e).__name__})")
 
-    if usar_cache:
-        try:
-            cache.salvar(estado_cache)
-        except OSError as e:
-            registrar(f"  Aviso: não foi possível gravar o cache de busca ({type(e).__name__})")
+    # Grava sempre: mesmo com --sem-cache os resultados frescos renovam o cache e
+    # as falhas desta execução precisam contar para o circuito.
+    try:
+        cache.salvar(estado_cache)
+    except OSError as e:
+        registrar(f"  Aviso: não foi possível gravar o cache de busca ({type(e).__name__})")
 
     if not vagas:
         return []

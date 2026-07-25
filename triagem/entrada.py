@@ -3,18 +3,23 @@
 import json
 import re
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
 SEPARADOR_TEXTO = "\n---\n"
 
+Log = Callable[[str], None]
 
-def carregar_vagas(conteudo: str) -> List[str]:
+
+def carregar_vagas(conteudo: str, log: Optional[Log] = None) -> List[str]:
     """Recebe o conteúdo bruto e devolve uma lista de vagas em texto.
 
     - JSON (lista de objetos ou objeto único): cada item vira um bloco de texto
       com os campos preservados, para o modelo extrair.
     - Texto livre: vagas separadas por uma linha contendo apenas '---';
       sem separador, o conteúdo inteiro é uma vaga só.
+
+    Item sem dados é descartado individualmente e relatado em `log`. Antes, um
+    único item vazio invalidava o arquivo inteiro e nenhuma vaga era analisada.
     """
     conteudo = conteudo.strip()
     if not conteudo:
@@ -30,17 +35,22 @@ def carregar_vagas(conteudo: str) -> List[str]:
         if not isinstance(dados, list) or not all(isinstance(v, dict) for v in dados):
             raise ValueError("JSON deve ser um objeto ou uma lista de objetos de vaga.")
         vagas = [_vaga_json_para_texto(v) for v in dados]
-        if not vagas or any(not vaga.strip() for vaga in vagas):
+        validas = [vaga for vaga in vagas if vaga.strip()]
+        if not validas:
             raise ValueError("JSON não contém nenhuma vaga com dados.")
-        return vagas
+        descartados = len(vagas) - len(validas)
+        if descartados and log:
+            log(f"Aviso: {descartados} item(ns) do JSON sem dados — descartado(s). "
+                f"{len(validas)} vaga(s) seguem para análise.")
+        return validas
 
     # Aceita CRLF e espaços na linha separadora.
     blocos = [b.strip() for b in re.split(r"\r?\n\s*---\s*\r?\n", conteudo)]
     return [b for b in blocos if b]
 
 
-def carregar_arquivo(caminho: str) -> List[str]:
-    return carregar_vagas(Path(caminho).read_text(encoding="utf-8"))
+def carregar_arquivo(caminho: str, log: Optional[Log] = None) -> List[str]:
+    return carregar_vagas(Path(caminho).read_text(encoding="utf-8"), log)
 
 
 def _vaga_json_para_texto(vaga: dict) -> str:

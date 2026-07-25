@@ -35,9 +35,16 @@ def parse_pesos(texto: str) -> Dict[str, float]:
         if not nome:
             raise ValueError(f"Dimensão desconhecida em --pesos: '{chave.strip()}'. Use d1..d5.")
         try:
-            pesos[nome] = float(valor)
+            peso = float(valor)
         except ValueError as e:
             raise ValueError(f"Peso inválido para {chave.strip()}: '{valor}'.") from e
+        # Só a soma era validada: `d1=1.55,d2=-1.00,...` somava 1.0 e passava,
+        # com uma dimensão puxando o score para baixo quanto melhor fosse a nota.
+        if not 0.0 <= peso <= 1.0:
+            raise ValueError(
+                f"Peso fora da faixa para {chave.strip()}: {peso:g}. Use um valor entre 0 e 1."
+            )
+        pesos[nome] = peso
     total = sum(pesos.values())
     if abs(total - 1.0) > 1e-6:
         raise ValueError(f"Os pesos devem somar 1.0 (informado: {total:.3f}).")

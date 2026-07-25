@@ -1,6 +1,7 @@
 """Testes do pipeline sem API: entrada, scoring, relatório, histórico e export."""
 
 import json
+import random
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -26,11 +27,13 @@ from triagem.buscador import (
     _dias_desde,
     _enriquecer_descricao,
     _fonte_estruturada,
+    _host_de_anuncio,
     _inspecionar_link,
     _limpar_url,
     _local_declarado_incompativel,
     _localizacao_compativel,
     _normalizar,
+    _normalizar_com_indices,
     _pontuacao_preliminar,
     _redigir_segredos,
     _selecionar_candidatas,
@@ -41,7 +44,7 @@ from triagem.buscador import (
     buscar_vagas,
 )
 from triagem.cli import _inteiro_positivo, _montar_parser
-from triagem.curriculo import gerar_material, remover_blocos_privados
+from triagem.curriculo import carregar_cv_base, gerar_material, remover_blocos_privados
 from triagem.entrada import carregar_vagas
 from triagem.exportar import exportar
 from triagem.relatorio import render_relatorio
@@ -413,7 +416,12 @@ def test_prefiltro_penaliza_experiencia_em_ingles_e_senioridade_na_descricao():
 
 
 def test_localizacao_declarada_vence_texto_do_anuncio():
-    """Regressão real: a Adzuna dizia 'Recife' e o modelo classificou como remoto."""
+    """Regressão real: a Adzuna dizia 'Recife' e o modelo classificou como remoto.
+
+    Regra estrita: a praça declarada pela fonte vence o texto. Nem uma descrição
+    dizendo "100% remota" resgata uma vaga carimbada com outra cidade — era assim
+    que a vaga presencial em Recife entrava e ainda levava 10/10 no D2.
+    """
     presencial_recife = _vaga(
         "Desenvolvedor Back-end Júnior com Foco em DevOps",
         descricao="Requisitos: Java, Spring, JSF, Tomcat, WebServices e PostgreSQL na sede.",
@@ -427,7 +435,7 @@ def test_localizacao_declarada_vence_texto_do_anuncio():
     curitiba = _vaga("Estágio DevOps", localizacao="Curitiba, Paraná")
     generica = _vaga("Estágio DevOps", localizacao="Brasil")
     assert _local_declarado_incompativel(presencial_recife)
-    assert not _local_declarado_incompativel(remota_recife)
+    assert _local_declarado_incompativel(remota_recife)
     assert not _local_declarado_incompativel(curitiba)
     assert not _local_declarado_incompativel(generica)
 
@@ -1251,3 +1259,265 @@ def test_exportar_csv_neutraliza_formula(tmp_path):
 def test_exportar_extensao_invalida(tmp_path):
     with pytest.raises(ValueError, match="não suportada"):
         exportar([pontuar(_analise())], str(tmp_path / "rel.pdf"))
+
+
+# ------------------------------------------------- regressões da validação v2.1
+
+def test_item_sem_dados_nao_derruba_o_resto_do_lote():
+    """Um `{}` no meio do JSON invalidava o arquivo inteiro e nada era analisado."""
+    conteudo = json.dumps([
+        {"titulo": "DevOps Júnior", "link": "https://gupy.io/1", "descricao": "Pipelines e Docker."},
+        {"titulo": "DevSecOps Jr", "link": "https://gupy.io/2", "descricao": "Segurança em CI/CD."},
+        {},
+    ])
+    avisos = []
+    vagas = carregar_vagas(conteudo, log=avisos.append)
+    assert len(vagas) == 2
+    assert any("descartado" in aviso for aviso in avisos)
+
+
+def test_redirect_para_post_de_rede_social_e_descartado(monkeypatch):
+    """O pré-filtro julga o link anunciado; o encurtador só mostra o destino no redirect."""
+    monkeypatch.setattr(
+        "triagem.buscador._inspecionar_link",
+        lambda vaga: Inspecao(ativo=True, url_final="https://x.com/bot/status/123"),
+    )
+    vaga = _vaga("DevOps Júnior", link="https://portal-desconhecido.example/vaga/1")
+    linhas = []
+    assert _validar_links([vaga], 10, linhas.append) == []
+    assert any("redirect terminou fora" in linha for linha in linhas)
+
+
+def test_redirect_para_anuncio_legitimo_continua_passando(monkeypatch):
+    monkeypatch.setattr(
+        "triagem.buscador._inspecionar_link",
+        lambda vaga: Inspecao(ativo=True, url_final="https://acme.gupy.io/jobs/998877"),
+    )
+    vaga = _vaga("DevOps Júnior", link="https://jooble.org/jdp/-1")
+    assert len(_validar_links([vaga], 10)) == 1
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["https://ow.ly/abc", "https://buff.ly/3xy", "https://is.gd/x", "https://rb.gy/z",
+     "https://shorturl.at/abc", "https://cutt.ly/a"],
+)
+def test_encurtadores_conhecidos_nao_passam_do_prefiltro(link):
+    assert not _host_de_anuncio(_vaga("DevOps Júnior", link=link))
+
+
+@pytest.mark.parametrize(
+    "frase",
+    [
+        "Vaga 100% remota para todo o Brasil.",
+        "Trabalho remoto com encontros trimestrais.",
+        "Atuação em home office, sem necessidade de comparecer.",
+        "Fully remote position open to Brazil.",
+    ],
+)
+def test_descricao_remota_nao_resgata_praca_declarada(frase):
+    """O texto não desempata: quem manda é o campo de localização da fonte."""
+    vaga = _vaga("DevOps Júnior", descricao=f"Requisitos de CI/CD. {frase}",
+                 localizacao="Recife, Pernambuco")
+    assert _local_declarado_incompativel(vaga)
+
+
+@pytest.mark.parametrize(
+    "local",
+    ["Remoto", "Brasil", "Home Office", "Remoto - Brasil", "São Paulo, SP (Remoto)",
+     "Belo Horizonte - MG / Home Office",
+     # plurais: sem eles a fonte declarava remoto e a vaga era reprovada mesmo assim
+     "Vagas remotas", "Recife, PE - vagas remotas", "Curitiba/SP - postos remotos"],
+)
+def test_fonte_que_declara_remoto_no_proprio_campo_passa(local):
+    """Remoto dito pela própria fonte vale — inclusive junto com a cidade-sede."""
+    vaga = _vaga("DevOps Júnior", descricao="Requisitos: pipelines de CI/CD, Docker e automacao de infraestrutura.", localizacao=local)
+    assert not _local_declarado_incompativel(vaga)
+
+
+@pytest.mark.parametrize(
+    "local",
+    ["Recife, Pernambuco (não remoto)", "São Paulo - sem home office",
+     "Fortaleza, CE - not remote", "Salvador, BA - sem vagas remotas"],
+)
+def test_remoto_negado_no_campo_de_localizacao_nao_vale(local):
+    """"não remoto" contém "remoto" e provava o contrário do que a fonte declara."""
+    vaga = _vaga("DevOps Júnior", descricao="Requisitos: pipelines de CI/CD, Docker e automacao de infraestrutura.", localizacao=local)
+    assert _local_declarado_incompativel(vaga)
+
+
+@pytest.mark.parametrize(
+    "frase",
+    [
+        "Must be authorized to work in EU",
+        "Applicants must have the right to work in the UK",
+        "Must be legally authorized to work in Canada",
+        "This position requires US work authorization",
+        "Only candidates residing in Germany will be considered",
+        "Sponsorship is not provided for this role",
+        "We cannot sponsor work visas",
+        "Candidates must hold EU citizenship",
+        "Must be located within the continental United States",
+    ],
+)
+def test_restricao_de_visto_barra_ate_em_host_desconhecido(frase):
+    """No domínio de carreiras da própria empresa não há portal conhecido para reprovar."""
+    vaga = _vaga("DevOps Engineer Junior", link="https://careers.acme-global.io/jobs/1",
+                 descricao=f"Remote role with Docker and Terraform. {frase}")
+    assert not _localizacao_compativel(vaga)
+
+
+@pytest.mark.parametrize(
+    "frase",
+    ["Fully remote role, authorized to work in Brazil required.",
+     "Remote worldwide, hiring across LATAM including Brazil.",
+     "Vaga remota para todo o Brasil, com Docker e Terraform."],
+)
+def test_restricao_de_visto_nao_reprova_vaga_aberta_ao_brasil(frase):
+    vaga = _vaga("DevOps Engineer Junior", link="https://careers.acme-global.io/jobs/1",
+                 descricao=frase)
+    assert _localizacao_compativel(vaga)
+
+
+def test_sem_cache_continua_respeitando_o_circuito_aberto(monkeypatch):
+    """--sem-cache ignora RESULTADOS gravados, não o fato de a cota estar esgotada."""
+    estado = cache.carregar()
+    for _ in range(cache.FALHAS_PARA_ABRIR):
+        cache.registrar_falha(estado, "Google Search")
+    cache.salvar(estado)
+
+    chamadas = {"n": 0}
+
+    class ClienteContador:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, **kwargs):
+            chamadas["n"] += 1
+            raise RuntimeError("não deveria ter sido chamado")
+
+    monkeypatch.setattr("triagem.buscador._buscar_jooble", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._buscar_adzuna", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._busca_metasearch", lambda pedido, limite: ("", []))
+
+    linhas = []
+    buscar_vagas(ClienteContador(), "cv", "pedido", limite=3, log=linhas.append, usar_cache=False)
+    assert chamadas["n"] == 0
+    assert any("CIRCUITO ABERTO" in linha for linha in linhas)
+
+
+def test_falha_sob_sem_cache_conta_para_o_circuito(monkeypatch):
+    """Sem persistir, o circuito nunca aprendia com execuções feitas com --sem-cache."""
+    cache.salvar({"entradas": {}, "circuitos": {}})
+
+    class ClienteQuebrado:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, **kwargs):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr("triagem.buscador._buscar_jooble", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._buscar_adzuna", lambda pedido, limite: [])
+    monkeypatch.setattr("triagem.buscador._busca_metasearch", lambda pedido, limite: ("", []))
+
+    buscar_vagas(ClienteQuebrado(), "cv", "pedido", limite=3, usar_cache=False)
+    assert cache.carregar()["circuitos"]["Google Search"]["falhas"] == 1
+
+
+def test_enriquecimento_recorta_a_partir_da_ancora_e_nao_do_menu():
+    """O índice vinha do texto normalizado e era usado para fatiar o texto visível."""
+    truncada = "Atuar com pipelines CI/CD e automacao de infraestrutura em nuvem para o time..."
+    menu = "MENU >>> | Home | Vagas | Empresas | Login | ---- *** ---- " * 6
+    pagina = (
+        "<body>" + menu
+        + "Atuar com pipelines CI/CD e automacao de infraestrutura em nuvem para o time "
+          "de plataforma. Requisitos: Docker, Kubernetes, Terraform, Azure DevOps. " * 3
+        + "</body>"
+    )
+    enriquecida = _enriquecer_descricao(_vaga("DevOps Júnior", descricao=truncada), pagina)
+    assert enriquecida.descricao.startswith("Atuar com pipelines")
+    assert "Home | Vagas" not in enriquecida.descricao
+    assert "Kubernetes" in enriquecida.descricao
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["MENU >>> | Home | Vagas — acentuação e pontuação!!", "Olá   MUNDO", "a.b+c#d",
+     "café ½ litro", "  espaço inicial", "final   ", "ÁÉÍÓÚ àèìòù ç ñ", ""],
+)
+def test_normalizar_com_indices_bate_com_normalizar(texto):
+    """Se as duas divergirem, o recorte do enriquecimento volta a sair deslocado."""
+    normalizado, indices = _normalizar_com_indices(texto)
+    assert normalizado == _normalizar(texto)
+    assert len(indices) == len(normalizado)
+    assert all(0 <= i < len(texto) for i in indices)
+
+
+def test_normalizar_com_indices_resiste_a_entrada_aleatoria():
+    """`_normalizar_com_indices` tem um atalho para ASCII que precisa ser equivalente.
+
+    Semente fixa: a suíte não pode ficar intermitente, mas o alfabeto cobre
+    combining marks soltos, ligaduras, CJK, zero-width e NBSP — onde o atalho
+    erraria se estivesse errado.
+    """
+    alfabeto = (
+        "abcXYZ019 .+#-_/|!?()[]{}<>@$%&*=~^\t\n\r"
+        "áéíóúàèìòùâêîôûãõçñÁÉÍÓÚÂÊÔÃÕÇÑ"
+        "½¼ﬁœæßøåÅ€£¥•…—–«»“”‘’"
+        "̧́̀̃"
+        "日本語한국어​ ﻿"
+    )
+    aleatorio = random.Random(20260725)
+    for _ in range(2000):
+        texto = "".join(aleatorio.choice(alfabeto)
+                        for _ in range(aleatorio.randint(0, 40)))
+        normalizado, indices = _normalizar_com_indices(texto)
+        assert normalizado == _normalizar(texto), repr(texto)
+        assert len(indices) == len(normalizado), repr(texto)
+        assert all(0 <= i < len(texto) for i in indices), repr(texto)
+
+
+@pytest.mark.parametrize(
+    "conteudo",
+    [
+        "# CV\n<!-- PRIVADO -->Telefone: 41 99999-9999\nresto do cv",
+        "# CV\n<!-- PRIVADO -->Telefone<!-- FIM PRIVADO -->",
+        "# CV\n<!-- PRIVADO -->Telefone<!-- \\PRIVADO -->",
+        "# CV\nTelefone<!-- /PRIVADO -->",
+    ],
+)
+def test_marcador_privado_malformado_impede_o_envio_do_cv(tmp_path, monkeypatch, conteudo):
+    """Falha fechado: marcador com typo vazava o bloco inteiro para a API em silêncio."""
+    cv = tmp_path / "cv_base.md"
+    cv.write_text(conteudo, encoding="utf-8")
+    monkeypatch.setattr("triagem.curriculo.CV_BASE", cv)
+    with pytest.raises(ValueError, match="PRIVADO malformado"):
+        carregar_cv_base()
+
+
+def test_cv_com_bloco_bem_formado_continua_carregando(tmp_path, monkeypatch):
+    cv = tmp_path / "cv_base.md"
+    cv.write_text("# CV\n<!-- PRIVADO -->\nTel: 41 99999-9999\n<!-- /PRIVADO -->\n\n## Exp\nEstágio.\n",
+                  encoding="utf-8")
+    monkeypatch.setattr("triagem.curriculo.CV_BASE", cv)
+    carregado = carregar_cv_base()
+    assert "99999" not in carregado
+    assert "Estágio." in carregado
+
+
+def test_historico_corrompido_aponta_o_backup(tmp_path, monkeypatch):
+    """O .bak é criado a cada gravação; de nada adianta se o erro não o mencionar."""
+    arquivo = tmp_path / "historico.json"
+    arquivo.write_text('{"a": {quebrado', encoding="utf-8")
+    arquivo.with_suffix(".json.bak").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(historico, "ARQUIVO", arquivo)
+    with pytest.raises(ValueError, match=r"\.bak"):
+        historico.carregar()
+
+
+@pytest.mark.parametrize("texto", ["d1=1.55,d2=-1.00,d3=0.20,d4=0.15,d5=0.10", "d2=-0.10", "d1=1.5"])
+def test_peso_fora_da_faixa_e_recusado(texto):
+    """Só a soma era validada: pesos negativos passavam desde que somassem 1.0."""
+    with pytest.raises(ValueError, match="fora da faixa"):
+        parse_pesos(texto)

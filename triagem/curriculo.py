@@ -25,6 +25,10 @@ _BLOCO_PRIVADO = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# Qualquer comentário que ainda fale em PRIVADO depois da remoção é marcador
+# malformado: bloco sem fechamento, `<!-- FIM PRIVADO -->`, barra invertida.
+_MARCADOR_PRIVADO_RESIDUAL = re.compile(r"<!--[^>]*PRIVADO[^>]*-->", re.IGNORECASE)
+
 
 def remover_blocos_privados(texto: str) -> tuple[str, int]:
     """Devolve (texto sem os blocos <!-- PRIVADO -->, quantos blocos saíram)."""
@@ -38,6 +42,17 @@ def carregar_cv_base() -> str:
             f"CV base não encontrado em {CV_BASE}. Crie o arquivo a partir do template do projeto."
         )
     limpo, _ = remover_blocos_privados(CV_BASE.read_text(encoding="utf-8"))
+    # Falha fechado: um marcador digitado errado deixava o bloco inteiro passar
+    # em silêncio, e o telefone/e-mail do CV seguia para a API. Entre recusar a
+    # execução e vazar dado pessoal, recusar é o comportamento certo.
+    residual = _MARCADOR_PRIVADO_RESIDUAL.search(limpo)
+    if residual:
+        raise ValueError(
+            f"Marcador PRIVADO malformado em {CV_BASE}: {residual.group(0)!r}. "
+            "Um bloco privado precisa do par exato '<!-- PRIVADO -->' ... '<!-- /PRIVADO -->'. "
+            "Enquanto isso não for corrigido o CV não é enviado à API, "
+            "para não vazar dados pessoais."
+        )
     return limpo
 
 

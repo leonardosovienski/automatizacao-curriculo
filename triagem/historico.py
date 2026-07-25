@@ -39,15 +39,27 @@ def gerar_id(texto: str) -> str:
     return hashlib.sha256(normalizado.encode("utf-8")).hexdigest()[:10]
 
 
+def _dica_backup() -> str:
+    """`salvar()` grava um .bak a cada escrita — de nada adianta se ninguém souber."""
+    backup = ARQUIVO.with_suffix(f"{ARQUIVO.suffix}.bak")
+    if backup.exists():
+        return (f"\nHá um backup da gravação anterior em '{backup}'. "
+                f"Para restaurar: copie-o sobre '{ARQUIVO.name}'.")
+    return "\nNenhum backup (.bak) foi encontrado ao lado do arquivo."
+
+
 def carregar() -> Dict[str, dict]:
     if not ARQUIVO.exists():
         return {}
     try:
         dados = json.loads(ARQUIVO.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"Não foi possível ler o histórico '{ARQUIVO}': {e}") from e
+        raise ValueError(f"Não foi possível ler o histórico '{ARQUIVO}': {e}.{_dica_backup()}") from e
     if not isinstance(dados, dict):
-        raise ValueError(f"Histórico inválido em '{ARQUIVO}': o conteúdo deve ser um objeto JSON.")
+        raise ValueError(
+            f"Histórico inválido em '{ARQUIVO}': o conteúdo deve ser um objeto JSON."
+            f"{_dica_backup()}"
+        )
     return dados
 
 
