@@ -20,6 +20,7 @@ from triagem.buscador import (
     DIAS_MAXIMOS_ANUNCIO,
     Inspecao,
     _ancorar_empresa,
+    _busca_metasearch,
     _buscar_adzuna,
     _buscar_jooble,
     _dias_desde,
@@ -662,6 +663,35 @@ def test_sem_cache_forca_consulta_fresca_e_ignora_entradas_gravadas():
         estado, "pedido|20", False, lambda _: None,
     )
     assert vazio == []
+
+
+def test_metabusca_espaca_consultas_e_para_quando_ja_tem_material(monkeypatch):
+    """Em rajada o DDG estrangula a última consulta; medido 25 vs 32 resultados."""
+    pausas = []
+    monkeypatch.setattr("triagem.buscador.time.sleep", pausas.append)
+    consultas = []
+
+    class DDGSFake:
+        def text(self, consulta, **kwargs):
+            consultas.append(consulta)
+            n = len(consultas)
+            return [
+                {"title": f"Vaga {n}-{i}", "href": f"https://x.com.br/{n}-{i}", "body": "descrição"}
+                for i in range(8)
+            ]
+
+    monkeypatch.setattr("triagem.buscador.DDGS", DDGSFake)
+
+    _, fontes = _busca_metasearch("pedido", 30)
+    assert len(consultas) == 4                      # nenhuma consulta pulada
+    assert len(fontes) == 32                        # 4 x 8, sem perder resultado
+    assert len(pausas) == 3                         # pausa entre elas, não antes da 1ª
+    assert all(1.5 <= p <= 3.0 for p in pausas)
+
+    # Com limite baixo, para assim que já tem material suficiente.
+    consultas.clear()
+    _busca_metasearch("pedido", 8)
+    assert len(consultas) < 4
 
 
 def test_metabusca_cai_no_cache_vencido_quando_o_ddgs_bloqueia():

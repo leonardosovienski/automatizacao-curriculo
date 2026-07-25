@@ -789,7 +789,14 @@ def _busca_metasearch(pedido: str, limite: int) -> tuple[str, list[str]]:
     resultados = []
     vistos = set()
     max_por_consulta = min(15, max(5, limite // 3))
-    for consulta in consultas:
+    for indice, consulta in enumerate(consultas):
+        if len(vistos) >= limite:
+            break  # já temos material suficiente; consulta a mais só arrisca bloqueio
+        if indice:
+            # Pausa entre consultas, não só na retentativa. Medido: em rajada a 4ª
+            # consulta volta estrangulada (1 resultado em vez de 8); com pausa o
+            # mesmo conjunto rendeu 32 em vez de 25.
+            time.sleep(random.uniform(1.5, 3.0))
         # Instância nova por consulta: o DDG bloqueia rajadas na mesma sessão.
         # Só 2 tentativas e espera longa: o bloqueio é por padrão de uso, não por
         # cota — insistir rápido piora. Backoff curto seria contraproducente.
