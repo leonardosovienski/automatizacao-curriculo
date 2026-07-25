@@ -26,7 +26,7 @@ ARQUIVO = Path(os.environ.get("TRIAGEM_CACHE") or PADRAO)
 TTL_SEGUNDOS = {
     "Jooble": 6 * 3600,
     "Adzuna": 6 * 3600,
-    "DDGS": 3600,
+    "Metabusca DDGS": 3600,
     "Google Search": 24 * 3600,
 }
 TTL_FALLBACK = 3600

@@ -156,6 +156,27 @@ PORTAIS_INTERNACIONAIS = (
     "otta.com",
     "welcometothejungle.com",
 )
+# Nunca são a página canônica de um anúncio: são posts, encurtadores e feeds que
+# apenas republicam vagas. Uma execução real aprovou com 74/100 um tweet de bot
+# (x.com/.../status/...) — o host era desconhecido e respondeu 200, então nem o
+# filtro de elegibilidade nem a validação de link o pegaram.
+HOSTS_NAO_CANONICOS = (
+    "x.com",
+    "twitter.com",
+    "t.co",
+    "facebook.com",
+    "instagram.com",
+    "t.me",
+    "telegram.me",
+    "whatsapp.com",
+    "reddit.com",
+    "medium.com",
+    "youtube.com",
+    "bit.ly",
+    "tinyurl.com",
+    "lnkd.in",
+)
+
 PORTAIS_BRASILEIROS = (
     "gupy.io",
     "vagas.com.br",
@@ -324,6 +345,23 @@ def _pontuacao_preliminar(vaga: VagaEncontrada) -> int:
     if len(vaga.descricao) < 100:
         pontos -= 2
     return pontos
+
+
+def _host_de_anuncio(vaga: VagaEncontrada) -> bool:
+    """False para post de rede social, encurtador e agregador de link.
+
+    O candidato precisa cair na página de candidatura, não num tweet que fala
+    sobre a vaga.
+    """
+    partes = urlsplit(vaga.link)
+    host = partes.netloc.lower()
+    host = host[4:] if host.startswith("www.") else host
+    if any(host == ruim or host.endswith(f".{ruim}") for ruim in HOSTS_NAO_CANONICOS):
+        return False
+    # No LinkedIn o anúncio vive em /jobs/; /feed/update/... é um post sobre a vaga.
+    if "linkedin.com" in host and "/jobs/" not in partes.path:
+        return False
+    return True
 
 
 def _area_alvo(vaga: VagaEncontrada) -> bool:
@@ -532,9 +570,12 @@ def _selecionar_candidatas(
     vagas: list[VagaEncontrada], limite: int, log: Log = _sem_log
 ) -> list[VagaEncontrada]:
     """Remove lixo/senioridade/vaga vencida, deduplica e ordena antes da triagem cara."""
-    cortes = {"area": 0, "senioridade": 0, "antiga": 0, "local": 0, "duplicada": 0}
+    cortes = {"area": 0, "senioridade": 0, "antiga": 0, "local": 0, "nao_anuncio": 0, "duplicada": 0}
     candidatas = []
     for vaga in vagas:
+        if not _host_de_anuncio(vaga):
+            cortes["nao_anuncio"] += 1
+            continue
         if not _area_alvo(vaga):
             cortes["area"] += 1
             continue
@@ -912,6 +953,53 @@ def _fonte_estruturada(
     return []
 
 
+def _texto_livre_com_cache(
+    nome: str,
+    produzir,
+    estado_cache: dict,
+    consulta_cache: str,
+    usar_cache: bool,
+    registrar: Log,
+) -> tuple[str, list[str]]:
+    """Mesmo contrato de `_fonte_estruturada`, mas para as fontes de texto livre.
+
+    Sem isto, a instabilidade do DDGS (o DuckDuckGo bloqueia rajadas e devolve
+    zero) atingia toda execução: a busca perdia a única fonte de texto livre viva
+    enquanto a cota do Google Search está esgotada.
+    """
+    if usar_cache:
+        guardado, idade = cache.obter(estado_cache, nome, consulta_cache)
+        if guardado:
+            registrar(
+                f"  {nome}: {len(guardado.get('fontes', []))} resultado(s) — cache de "
+                f"{cache.descrever_idade(idade)}"
+            )
+            return guardado.get("texto", ""), guardado.get("fontes", [])
+
+    try:
+        texto, fontes = produzir()
+    except Exception as e:  # noqa: BLE001
+        texto, fontes = "", []
+        registrar(f"  {nome}: indisponível ({type(e).__name__})")
+
+    if texto.strip():
+        cache.guardar(estado_cache, nome, consulta_cache, {"texto": texto, "fontes": fontes})
+        registrar(f"  {nome}: {len(fontes)} resultado(s)")
+        return texto, fontes
+
+    if usar_cache:
+        vencido, idade = cache.obter_vencido(estado_cache, nome, consulta_cache)
+        if vencido and vencido.get("texto"):
+            registrar(
+                f"  {nome}: sem resposta agora — usando cache de "
+                f"{cache.descrever_idade(idade)} ({len(vencido.get('fontes', []))} resultado(s))"
+            )
+            return vencido["texto"], vencido.get("fontes", [])
+
+    registrar(f"  {nome}: 0 resultado(s)")
+    return "", []
+
+
 def testar_fontes(client: genai.Client, log: Optional[Log] = None) -> dict[str, bool]:
     """Health check por fonte. Um Google Search OK fecha o circuito na hora."""
     registrar = log or _sem_log
@@ -1049,12 +1137,11 @@ achados com links.
 
     # Também cai no fallback quando o grounding responde vazio, não só quando falha.
     if not texto_livre.strip():
-        try:
-            texto_livre, fontes = _busca_metasearch(pedido, limite_coleta)
-        except Exception as e:  # noqa: BLE001
-            texto_livre, fontes = "", []
-            registrar(f"  Metabusca DDGS: indisponível ({type(e).__name__})")
-        registrar(f"  Metabusca DDGS: {len(fontes)} resultado(s)")
+        texto_livre, fontes = _texto_livre_com_cache(
+            "Metabusca DDGS",
+            lambda: _busca_metasearch(pedido, limite_coleta),
+            estado_cache, consulta_cache, usar_cache, registrar,
+        )
 
     if texto_livre.strip():
         try:

@@ -33,6 +33,7 @@ from triagem.buscador import (
     _pontuacao_preliminar,
     _redigir_segredos,
     _selecionar_candidatas,
+    _texto_livre_com_cache,
     _texto_visivel,
     _url_canonica,
     _validar_links,
@@ -364,6 +365,33 @@ def test_area_e_decidida_pelo_titulo_e_nao_pela_descricao():
     assert len(_selecionar_candidatas(dentro, 10)) == 2
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://x.com/liftmycv/status/2077155032739254370",
+        "https://twitter.com/vagas/status/123",
+        "https://www.linkedin.com/feed/update/urn:li:activity:1",  # feed, não /jobs/view/
+        "https://t.me/vagasdevops/456",
+        "https://bit.ly/vaga-devops",
+    ],
+)
+def test_post_de_rede_social_nao_e_anuncio_de_vaga(link):
+    """Regressão real: um tweet de bot foi aprovado com 74/100."""
+    assert _selecionar_candidatas([_vaga("DevOps Júnior", link=link)], 10) == []
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://gupy.io/v/1",
+        "https://br.linkedin.com/jobs/view/devops-junior-4416146595",
+        "https://www.adzuna.com.br/details/123",
+    ],
+)
+def test_pagina_real_de_anuncio_continua_passando(link):
+    assert len(_selecionar_candidatas([_vaga("DevOps Júnior", link=link)], 10)) == 1
+
+
 def test_vaga_antiga_e_banco_de_talentos_sao_descartados():
     antiga = _vaga("DevOps Júnior", publicada_em="2020-01-01T00:00:00Z")
     pool = _vaga("Banco de Talentos - Desenvolvedor .NET C#")
@@ -634,6 +662,53 @@ def test_sem_cache_forca_consulta_fresca_e_ignora_entradas_gravadas():
         estado, "pedido|20", False, lambda _: None,
     )
     assert vazio == []
+
+
+def test_metabusca_cai_no_cache_vencido_quando_o_ddgs_bloqueia():
+    """O DuckDuckGo bloqueia rajadas; sem cache a busca perde a fonte inteira."""
+    estado = cache.carregar()
+    cache.guardar(
+        estado, "Metabusca DDGS", "pedido|20",
+        {"texto": "Título: DevOps Jr\nLink: https://x.com.br/1", "fontes": ["- resultado: a"]},
+    )
+    chave = next(iter(estado["entradas"]))
+    velho = datetime.now(timezone.utc) - timedelta(hours=5)
+    estado["entradas"][chave]["gravado_em"] = velho.isoformat(timespec="seconds")
+
+    linhas = []
+    texto, fontes = _texto_livre_com_cache(
+        "Metabusca DDGS", lambda: ("", []), estado, "pedido|20", True, linhas.append
+    )
+    assert "DevOps Jr" in texto and fontes == ["- resultado: a"]
+    assert any("cache" in linha for linha in linhas)
+
+
+def test_metabusca_usa_cache_fresco_sem_consultar_o_ddgs():
+    estado = cache.carregar()
+    cache.guardar(
+        estado, "Metabusca DDGS", "pedido|20",
+        {"texto": "Título: DevOps Jr", "fontes": ["- resultado: a"]},
+    )
+    chamadas = {"n": 0}
+
+    def nunca(*_):
+        chamadas["n"] += 1
+        return "", []
+
+    texto, _ = _texto_livre_com_cache(
+        "Metabusca DDGS", nunca, estado, "pedido|20", True, lambda _: None
+    )
+    assert chamadas["n"] == 0 and "DevOps Jr" in texto
+
+
+def test_metabusca_que_explode_nao_derruba_a_busca():
+    def explode():
+        raise RuntimeError("ddgs fora do ar")
+
+    texto, fontes = _texto_livre_com_cache(
+        "Metabusca DDGS", explode, cache.carregar(), "p|1", True, lambda _: None
+    )
+    assert (texto, fontes) == ("", [])
 
 
 def test_cache_poda_entradas_alem_da_retencao():

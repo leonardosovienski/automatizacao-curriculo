@@ -9,6 +9,8 @@ historico.json.bak
 .cache_busca.json
 relatorio*.md
 relatorio*.csv
+resultado*.md
+resultado*.csv
 candidatura*.md
 resultados_busca*.md
 busca_automatica.md
