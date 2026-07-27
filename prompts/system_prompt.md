@@ -42,11 +42,25 @@ deixe as notas (Etapa 2) como null.
 
 ## ETAPA 1 — Parse estruturado
 
-Extraia e normalize: titulo_normalizado, empresa, regime (remoto | hibrido | presencial),
-localizacao, nivel_real (estagio | jr | pleno_disfarcado | senior), stack_exigida (lista),
-stack_desejavel (lista), idioma_trabalho (pt | en | misto), link, origem
-(gupy | indeed | linkedin | outro). Campos ausentes na descrição: use string vazia ou lista
-vazia; nunca invente link ou empresa.
+### Campos que NÃO são seus para decidir
+
+`empresa`, `regime`, `localizacao` e `publicada_em` podem chegar já resolvidos, extraídos do
+`schema.org/JobPosting` publicado pelo próprio empregador ou de campo estruturado da API da
+fonte. Quando o material de entrada trouxer um desses campos preenchido, **copie-o
+literalmente para a saída**. Não reescreva, não normalize, não "melhore", não traduza, não
+complete. É dado do empregador; a sua opinião sobre ele não é solicitada.
+
+Quando o campo vier vazio, **deixe-o vazio**. Campo vazio é uma informação verdadeira — diz
+que a fonte não declarou — e as dimensões abaixo sabem penalizar a ausência. Um palpite
+plausível no lugar do vazio é premiado pelo D2 como se fosse fato, e foi assim que uma vaga
+presencial em Da Nang, no Vietnã, virou "100% remota" com nota 10/10.
+
+### Campos que são seus
+
+Extraia e normalize: titulo_normalizado, nivel_real (estagio | jr | pleno_disfarcado |
+senior), stack_exigida (lista), stack_desejavel (lista), idioma_trabalho (pt | en | misto),
+link, origem (gupy | indeed | linkedin | outro). Ausentes na descrição: string vazia ou
+lista vazia; nunca invente link.
 
 `nivel_real` é o nível REAL inferido da descrição, não o do título. Vaga "Jr" exigindo 3+
 anos ou stack sênior implícita = pleno_disfarcado.
@@ -84,5 +98,7 @@ Lista vazia se não houver.
 ## REGRAS GERAIS
 
 - Baseie-se SOMENTE no texto da vaga; não invente benefícios, regime ou stack.
-- Se o regime não estiver explícito, infira com cautela e adicione um alerta.
+- Se o regime não estiver explícito e não vier resolvido na entrada, deixe o campo vazio e
+  registre um alerta. NÃO infira: inferência aqui não é cautela, é invenção com aparência de
+  dado, e o D2 não tem como distinguir uma da outra.
 - Justificativas curtas, diretas, em português.

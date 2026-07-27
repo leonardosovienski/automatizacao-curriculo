@@ -7,6 +7,16 @@ venv/
 historico.json
 historico.json.bak
 .cache_busca.json
+# Payloads brutos para replay determinístico: dados de execução, não código.
+.replay/
+.migracao_historico.json
+historico.json.pre-migracao
+# Backups locais e relatórios de sessão.
+*.bak
+primeira.md
+segunda.md
+terceira.md
+nova_era.md
 relatorio*.md
 relatorio*.csv
 resultado*.md
