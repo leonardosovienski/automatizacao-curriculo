@@ -31,7 +31,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from . import ats, cache, replay
+from . import alvos_ats, ats, cache, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
@@ -934,6 +934,9 @@ class Inspecao:
     url_final: str = ""
     texto_pagina: str = ""
     anuncio: Anuncio = field(default_factory=Anuncio)
+    ats_provedor: str = ""
+    ats_token: str = ""
+    ats_job_id: str = ""
 
 
 # O User-Agent auto-declarado como bot levava 403 da Adzuna — a fonte com o melhor
@@ -1107,13 +1110,25 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
     # pública, o dado vem da fonte do empregador em vez de ser lido da página. Falha
     # aqui não interrompe nada — `rotear` devolve None e a esteira segue no fluxo
     # legado (JSON-LD e, por último, o texto livre).
-    dados_ats = ats.rotear(link, bruto)
+    url_ats = url_final or link
+    alvo_ats = ats.descobrir_alvo(url_ats, bruto)
+    if alvo_ats:
+        alvos_ats.registrar(alvo_ats.provedor, alvo_ats.token)
+    dados_ats = ats.rotear(url_ats, bruto)
     if dados_ats:
         anuncio = _anuncio_de_contrato(dados_ats, urlsplit(url_final or link).netloc)
         if _expirado(anuncio.expira_em):
             replay.gravar("descarte_expirada", link, bruto, {"origem_dados": "API_GREENHOUSE"})
             return Inspecao(ativo=False, url_final=url_final)
-        return Inspecao(ativo=True, url_final=url_final, texto_pagina=bruto, anuncio=anuncio)
+        return Inspecao(
+            ativo=True,
+            url_final=url_final,
+            texto_pagina=bruto,
+            anuncio=anuncio,
+            ats_provedor=alvo_ats.provedor if alvo_ats else "",
+            ats_token=alvo_ats.token if alvo_ats else "",
+            ats_job_id=alvo_ats.job_id if alvo_ats else "",
+        )
 
     anuncio = _extrair_jobposting(bruto, urlsplit(url_final or link).netloc)
     # `validThrough` no passado encerra aqui: nem enriquecimento, nem LLM.
@@ -1226,6 +1241,14 @@ def _validar_links(
         if inspecao.url_final and not url_final:
             redirect_generico += 1
         atualizada = vaga.model_copy(update={"link_final": url_final})
+        if inspecao.ats_provedor:
+            atualizada = atualizada.model_copy(
+                update={
+                    "ats_provedor": inspecao.ats_provedor,
+                    "ats_token": inspecao.ats_token,
+                    "ats_job_id": inspecao.ats_job_id,
+                }
+            )
         antes = len(atualizada.descricao)
         atualizada = _aplicar_jobposting(atualizada, inspecao.anuncio)
         if not inspecao.anuncio.vazio():

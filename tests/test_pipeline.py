@@ -1741,6 +1741,20 @@ def test_historico_registrar_e_preservar_status(tmp_path, monkeypatch):
     assert historico.carregar()[vaga.id]["score_final"] == 93.5
 
 
+def test_delta_sync_fecha_apenas_vaga_nova_removida_do_ats():
+    origem = json.dumps(
+        {"ats_provedor": "greenhouse", "ats_token": "acme", "ats_job_id": "10"}
+    )
+    aplicada = json.dumps(
+        {"ats_provedor": "greenhouse", "ats_token": "acme", "ats_job_id": "20"}
+    )
+    hist = {"nova": {"status": "novo", "texto": origem}, "aplicada": {"status": "aplicado", "texto": aplicada}}
+    assert historico.marcar_fechadas_por_ats(hist, "greenhouse", "acme", {"30"}) == ["nova"]
+    assert hist["nova"]["status"] == "fechada"
+    assert "fechada_pelo_ats_em" in hist["aplicada"]
+    assert hist["aplicada"]["status"] == "aplicado"
+
+
 def test_historico_buscar_prefixo_ambiguo_ou_inexistente(tmp_path, monkeypatch):
     monkeypatch.setattr(historico, "ARQUIVO", tmp_path / "historico.json")
     hist = {"aa11": {}, "aa22": {}}

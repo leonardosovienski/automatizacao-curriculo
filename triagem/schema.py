@@ -102,6 +102,10 @@ class VagaEncontrada(BaseModel):
     confianca_empresa: Literal["alta", "media", "baixa"] = "alta"
     # Descrição completa obtida da página do anúncio (Adzuna/Jooble truncam).
     descricao_completa: bool = False
+    # Proveniência do ATS descoberta sem LLM; permite Delta Sync no histórico.
+    ats_provedor: str = ""
+    ats_token: str = ""
+    ats_job_id: str = ""
 
     def chave_dedup(self) -> str:
         return self.link_final or self.link

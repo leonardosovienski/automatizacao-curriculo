@@ -17,6 +17,8 @@ Cada adapter devolve o mesmo contrato que `_extrair_jobposting` produz a partir 
 
 import html as html_lib
 import re
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
@@ -30,6 +32,22 @@ CABECALHOS = {
 }
 
 _TAGS_HTML = re.compile(r"<[^>]+>")
+
+
+@dataclass(frozen=True)
+class AlvoATS:
+    provedor: str
+    token: str
+    job_id: str
+
+
+@dataclass(frozen=True)
+class ResultadoSyncATS:
+    provedor: str
+    token: str
+    estado: str  # ativo | inativo | falha
+    job_ids: frozenset[str] = frozenset()
+    erro: str = ""
 
 
 def _texto_limpo(bruto: str) -> str:
@@ -46,6 +64,7 @@ class GreenhouseAdapter:
     """Sem estado: só rotas e formatação. Erro de rede nunca escapa."""
 
     API_BASE = "https://boards-api.greenhouse.io/v1/boards"
+    PROVEDOR = "greenhouse"
 
     _URL_DIRETA = re.compile(r"boards\.greenhouse\.io/([^/]+)/jobs/(\d+)")
     _EMBED_NO_HTML = re.compile(r"embed/job_board/js\?for=([a-zA-Z0-9_-]+)")
@@ -144,9 +163,62 @@ class GreenhouseAdapter:
             "title": str(vaga.get("title") or "").strip(),
         }
 
+    @classmethod
+    def listar_ids(cls, board_token: str) -> ResultadoSyncATS:
+        """Lista vagas abertas; 403/404 são terminais, falhas de rede não são."""
+        try:
+            resposta = httpx.get(
+                f"{cls.API_BASE}/{board_token}/jobs",
+                timeout=TIMEOUT_SEGUNDOS,
+                headers=CABECALHOS,
+            )
+        except Exception as e:  # noqa: BLE001 — não tombstone por falha transitória
+            return ResultadoSyncATS(cls.PROVEDOR, board_token, "falha", erro=type(e).__name__)
+        if resposta.status_code in (403, 404):
+            return ResultadoSyncATS(cls.PROVEDOR, board_token, "inativo")
+        if resposta.status_code != 200:
+            return ResultadoSyncATS(
+                cls.PROVEDOR, board_token, "falha", erro=f"HTTP {resposta.status_code}"
+            )
+        try:
+            payload = resposta.json()
+            vagas = payload.get("jobs", []) if isinstance(payload, dict) else []
+            ids = frozenset(str(vaga["id"]) for vaga in vagas if isinstance(vaga, dict) and "id" in vaga)
+        except Exception as e:  # noqa: BLE001 — payload ruim não pode fechar vagas
+            return ResultadoSyncATS(cls.PROVEDOR, board_token, "falha", erro=type(e).__name__)
+        return ResultadoSyncATS(cls.PROVEDOR, board_token, "ativo", ids)
+
 
 # Ordem de tentativa do dispatcher. Novos ATS entram aqui.
 ADAPTADORES: tuple = (GreenhouseAdapter,)
+
+
+def descobrir_alvo(url: str, html_bruto: Optional[str] = None) -> Optional[AlvoATS]:
+    """Identifica ATS sem chamar a API; é o radar passivo da busca."""
+    for adaptador in ADAPTADORES:
+        try:
+            token, job_id = adaptador.identificar(url, html_bruto)
+            if token and job_id:
+                return AlvoATS(adaptador.PROVEDOR, token, job_id)
+        except Exception:  # noqa: BLE001 — reconhecimento nunca interrompe a busca
+            continue
+    return None
+
+
+def sincronizar_alvos(alvos: list[dict], paralelo: int = 4) -> list[ResultadoSyncATS]:
+    """Varre boards ativos em paralelo, isolando cada tenant do próximo."""
+    por_provedor = {adaptador.PROVEDOR: adaptador for adaptador in ADAPTADORES}
+
+    def sincronizar(alvo: dict) -> ResultadoSyncATS:
+        provedor = str(alvo.get("provedor") or "")
+        token = str(alvo.get("token") or "")
+        adaptador = por_provedor.get(provedor)
+        if not adaptador or not token:
+            return ResultadoSyncATS(provedor, token, "falha", erro="alvo inválido")
+        return adaptador.listar_ids(token)
+
+    with ThreadPoolExecutor(max_workers=max(1, paralelo)) as executor:
+        return list(executor.map(sincronizar, alvos))
 
 
 def rotear(url: str, html_bruto: Optional[str] = None) -> Optional[dict]:
@@ -155,14 +227,14 @@ def rotear(url: str, html_bruto: Optional[str] = None) -> Optional[dict]:
     Nunca levanta: qualquer falha significa "não sei", e a esteira segue para o
     JSON-LD e, se preciso, para o texto livre.
     """
+    alvo = descobrir_alvo(url, html_bruto)
+    if not alvo:
+        return None
     for adaptador in ADAPTADORES:
-        try:
-            board_token, job_id = adaptador.identificar(url, html_bruto)
-            if not board_token or not job_id:
-                continue
-            dados = adaptador.extrair(board_token, job_id)
-            if dados:
-                return dados
-        except Exception:  # noqa: BLE001 — adapter quebrado não pode parar a busca
+        if adaptador.PROVEDOR != alvo.provedor:
             continue
+        try:
+            return adaptador.extrair(alvo.token, alvo.job_id)
+        except Exception:  # noqa: BLE001 — adapter quebrado não pode parar a busca
+            return None
     return None
