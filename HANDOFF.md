@@ -9,7 +9,18 @@ natural e do CV base. A integração de IA usa a API Google Gemini.
 - Provedor: Google Gemini pelo pacote `google-genai`.
 - Modelo padrão da análise: `gemini-3.1-flash-lite` (`--modelo lite`).
 - Alternativa: `gemini-3.5-flash` (`--modelo flash`).
-- Modelo da descoberta com Google Search Grounding: `gemini-3.5-flash-lite`.
+- Modelo da descoberta com Google Search Grounding: `gemini-2.5-flash`. **Não troque por um
+  modelo mais barato sem medir**: o grounding de Google Search não tem cota no tier gratuito
+  em nenhum modelo das famílias 2.0 e 3.x — todos devolvem `429 RESOURCE_EXHAUSTED` já na
+  primeira chamada, com chave nova e zero uso. Medido em 2026-07-27 contra sete modelos; só
+  o 2.5-flash passou. É **uma chamada por busca**, então o custo é desprezível: a análise por
+  vaga, que é onde está o volume, continua no `flash-lite`. Um teste trava a lista de
+  modelos sem cota.
+- A ferramenta `url_context` foi removida da chamada de descoberta. Ela existia para o modelo
+  abrir a página do anúncio — trabalho que agora é feito por `_extrair_jobposting` com dado
+  autoritativo — e passou a derrubar a fonte com
+  `400 INVALID_ARGUMENT — Number of urls to lookup exceeds the limit (21 > 20)`. O teto é do
+  próprio tool e quem escolhe as URLs é o modelo; não há parâmetro nosso para limitar.
 - Chave: variável `GEMINI_API_KEY`, criada em <https://aistudio.google.com/apikey>.
 - A triagem usa saída JSON estruturada validada pelo schema Pydantic.
 - Há paralelismo, backoff exponencial com jitter para 429/5xx/timeout e uma segunda
@@ -44,10 +55,76 @@ Regra da arquitetura: **o modelo só toca no que é ambíguo.**
   agora item a item: uma vaga fora do schema não invalida mais a lista inteira.
 - Senioridade, área, validade, localização e elegibilidade geográfica são decididas por
   regra determinística **antes** da triagem paga.
-- A regra fixa do D2 (remoto=10, híbrido CWB=8, presencial CWB=6) continua sobrescrevendo
-  a nota do modelo. Ela amplificava alucinação: para uma vaga cuja Adzuna dizia "Recife,
-  Pernambuco" o modelo respondeu `regime=remoto` e a regra premiava com 10/10. Por isso a
-  praça declarada pela fonte passou a ser um filtro determinístico anterior ao scoring.
+- A regra fixa do D2 continua sobrescrevendo a nota do modelo:
+  `remoto=10 · híbrido CWB=7 · presencial CWB=6 · indefinido=4`. Ela amplificava alucinação:
+  para uma vaga cuja Adzuna dizia "Recife, Pernambuco" o modelo respondeu `regime=remoto` e a
+  regra premiava com 10/10. Por isso a praça declarada pela fonte passou a ser um filtro
+  determinístico anterior ao scoring.
+- **A D2 também pune distância**, não só regime. Antes, presencial em Da Nang e presencial em
+  Curitiba valiam os mesmos 6/10. Agora, regime não-remoto com praça fora do raio de
+  deslocamento cai para 1 (presencial) ou 2 (híbrido). Localização vazia ou genérica **não**
+  é punida: ausência de dado não é prova de distância, e punir o desconhecido reintroduziria
+  o palpite que o resto da arquitetura remove.
+- **O `regime` tem o estado `indefinido`, e ele é obrigatório para a regra anti-alucinação
+  funcionar.** Enquanto o `Literal` só aceitava `remoto | hibrido | presencial`, o modelo era
+  obrigado a escolher um dos três para não estourar `ValidationError` — e escolhia "remoto",
+  a mais provável em vagas de TI, que vale 10/10. O prompt proibia inferir; o schema tornava
+  a obediência impossível. Ao mexer aqui, lembre que **prompt, schema e `scoring.py` precisam
+  concordar**; há meta-testes que quebram se um lado mudar sozinho.
+
+## Precedência de dados (a regra central da arquitetura)
+
+```
+API de ATS  >  schema.org/JobPosting  >  campo estruturado da fonte  >  texto visível
+```
+
+O LLM **não participa** desta camada. `empresa`, `regime`, `localizacao` e `publicada_em`
+saem dela, são injetados no prompt como bloco autoritativo por `_bloco_autoritativo()` e
+reimpostos sobre a resposta por `_impor_campos_autoritativos()`. Prompt é pedido; a trava
+é garantia — as duas existem de propósito.
+
+Origem: numa validação com rede real, a vaga `Junior DevOps Engineer` da AvePoint entrou com
+`localizacao: "Remoto"` inventada pelo modelo e virou a recomendação #1 com 78/100. O anúncio
+é presencial em Da Nang, no Vietnã, e está publicado há 532 dias. As descrições vindas do
+caminho de texto livre tinham ~100 caracteres e eram paráfrases do próprio modelo, não o
+texto do anúncio: não havia de onde tirar a localização, e ele preencheu assim mesmo.
+
+## Coleta: rede e ética
+
+- `_obter()` usa cabeçalho de navegador com token de identificação (`TriagemVagas/2.0`).
+  A Adzuna — a fonte com o melhor material — devolvia 403 ao User-Agent anterior e passou a
+  devolver 200 com 3.4 KB de texto visível.
+- **`robots.txt` é respeitado.** O custo é assumido e conhecido: o LinkedIn proíbe, então
+  vaga de LinkedIn fica sem enriquecimento de página nem detecção de expiração.
+- Freio de 1,5 s por host, serializado com lock — `_validar_links` dispara 8 threads, e sem
+  o freio um portal recebe 8 requisições no mesmo instante.
+- Exceção única: `vertexaisearch.cloud.google.com` é roteador, não conteúdo. O redirect é
+  resolvido via `HEAD` sem baixar corpo, e o host de destino passa pelo `robots.txt` dele.
+  Sem isso, toda vaga vinda do Google Search ficaria presa a uma URL temporária.
+- **Alfândega de URL** antes de qualquer requisição ou token: domínio nu, caminhos como
+  `/login` e `/cadastro`, e página de listagem são descartados. Ela vale também para o
+  destino do redirect — o GeekHunter aponta a vaga para `/pt/vagas`, e sem o guarda esse
+  endereço viraria `link_final` de todas as vagas do portal, fundindo-as pela Camada A.
+
+## Deduplicação em cascata (`triagem/dedup.py`)
+
+Roda na **persistência**, não só dentro de uma execução. Antes, a mesma vaga da People
+Partners entrou duas vezes no histórico — uma pelo LinkedIn, outra pela Adzuna — com URLs
+distintas e duas análises pagas.
+
+- **Camada A** — URL canônica idêntica.
+- **Camada B** — `(empresa canônica, núcleo do cargo)`. `datePosted` e `addressLocality`
+  **não** entram na chave: medido na Adzuna, o `datePosted` do JSON-LD e o `publicada_em` da
+  API divergem em até 2 dias **na mesma página**, e a localidade de vaga remota é a sede da
+  empresa, que muda de portal para portal. Servem como corroboração (±3 dias), autorizando a
+  fusão quando nenhum lado tem `confianca_empresa: alta`.
+- **Camada C** — Jaccard ≥ 0.5 sobre o núcleo do cargo, para pares em que ao menos um lado
+  não tem JSON-LD. Foi o caso da People Partners: o LinkedIn não publica schema.org, então
+  só esta camada podia fundir aquele par.
+
+**Falso merge é pior que falso split**, e toda a calibragem segue essa assimetria: vaga
+fundida some sem aviso e nunca recebe candidatura; duplicata que escapa custa uma chamada de
+API e uma linha repetida. A perdedora nunca é descartada — vira alias com as duas URLs.
 
 ## Segurança de credenciais
 

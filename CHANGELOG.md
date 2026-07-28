@@ -3,10 +3,93 @@
 Todas as mudanças relevantes deste projeto. O formato segue
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
-## [Não publicado]
+## [Não publicado] — validação com rede real
 
-Duas iterações de auditoria sobre o commit inicial. Tudo abaixo está no working tree e
-ainda **não foi commitado nem publicado**.
+Primeira execução do pipeline contra as quatro fontes de verdade, em 2026-07-27. Toda a
+validação anterior tinha rodado com dublês, por falta de credenciais. Das 4 vagas aprovadas
+na primeira busca real, **2 prestavam** — e a #1 do ranking era presencial em Da Nang, no
+Vietnã, anunciada como "100% remota" com D2 10/10.
+
+Causa raiz: o caminho de texto livre entregava descrições de ~100 caracteres que eram
+paráfrases do próprio modelo, não o texto do anúncio. Sem material de onde tirar a
+localização, ele preenchia mesmo assim, e a regra fixa da D2 premiava a invenção.
+
+**Precedência de dados agora:** API de ATS > `schema.org/JobPosting` > campo estruturado da
+fonte > texto visível. Campo sem respaldo fica vazio — vazio o D2 pune, inventado o D2
+premiava.
+
+### Adicionado
+
+- **Conector de ATS via API pública** (`triagem/ats.py`), padrão Adapter, começando pelo
+  Greenhouse. Cobre o board direto e o iframe embutido no site da empresa, onde a URL não
+  menciona Greenhouse e o token só existe no `<script>` do embed. Contra a vaga da AvePoint:
+  `localizacao` de `"Remoto"` para `"Da Nang, Da Nang, Vietnam"`, `publicada_em` de vazio
+  para `2025-02-09` (532 dias, cortada pelo teto de 60) e descrição de 85 para 2.679 chars.
+- **Extrator de `schema.org/JobPosting`** com `hiringOrganization`, `jobLocationType`,
+  `datePosted`, `validThrough` e `description`. `validThrough` no passado descarta a vaga
+  sem consultar o LLM.
+- **Cascata de deduplicação em três camadas** (`triagem/dedup.py`), rodando na persistência.
+  Numa execução real reconheceu 3 vagas vindas do Google Search com URLs completamente
+  diferentes das gravadas, economizando 3 análises num lote de 5.
+- **Alfândega de URL**: domínio nu, blacklist de caminhos e página de listagem descartados
+  antes de qualquer requisição ou token. `solides.com.br` (home) e
+  `encontreumnerd.com.br/cadastro-prestador` (formulário) tinham recebido 59/100 e 58/100.
+- **`triagem/replay.py`**: guarda o blob do grounding e o HTML cru **só em caminhos de
+  falha**, com teto e TTL, para reproduzir falhas que a fonte não repete.
+- **`migrar_historico.py`**: migração de execução única, preservando status manual.
+- **Meta-testes** que leem o texto dos prompts e conferem contra as constantes do código.
+
+### Corrigido
+
+- **Coerção por schema forçava o LLM a chutar o regime.** O `Literal` só aceitava
+  `remoto | hibrido | presencial`; sem estado de "não sei", o modelo era obrigado a escolher
+  para não estourar `ValidationError`, e escolhia "remoto" — 10/10 na D2. Ele documentava a
+  coerção nos próprios alertas ("assumido como remoto por padrão de mercado"). Com
+  `indefinido` (D2 = 4) e alerta determinístico, a mesma vaga caiu de 71,5 para 54,0.
+- **Google Search estava permanentemente morto.** `MODELO_BUSCA` era `gemini-3.5-flash-lite`,
+  e o grounding não tem cota no tier gratuito em nenhum modelo 2.0/3.x — 429 na primeira
+  chamada, com chave nova. Medido contra sete modelos; só o `gemini-2.5-flash` passa.
+- **`url_context` derrubava a fonte** com `400 INVALID_ARGUMENT (21 > 20)`. Removido: a
+  leitura de página agora é feita pelo extrator de JSON-LD. Google Search voltou de 0 para
+  25 fontes citadas, e o pré-filtro de 8 para 14 candidatas.
+- **Erros da API apareciam só como `ClientError`.** Um 429 de cota, um 400 de limite de URLs
+  e um 504 de timeout eram indistinguíveis — três modos de falha reais, encontrados nesta
+  validação. `_resumo_erro()` leva a mensagem achatada, truncada e com credenciais redigidas.
+- **Localização inventada no caminho de texto livre.** `_ancorar_localizacao()` apaga o campo
+  quando não há respaldo, com janela de 600 caracteres em volta do anúncio — senão o "remoto"
+  de qualquer vaga vizinha no blob aprovaria esta.
+- **Nome de portal gravado como empregador.** "Nerdin Vagas de TI" era o site; o JSON-LD da
+  página mostra anunciante anônimo e `validThrough` de sete meses atrás.
+- **`_empresa_do_jsonld_confiavel` reprovava o nome no próprio domínio de carreiras.**
+  `avepoint.com` publicando "AvePoint" é a confirmação mais forte que existe, não a mais
+  fraca. A coincidência só é suspeita quando o host é um agregador conhecido.
+- **Redirect para página de listagem virava chave de dedup.** O GeekHunter aponta a vaga para
+  `/pt/vagas`; sem o guarda, todas as vagas do portal ganhariam `link_final` idêntico e a
+  Camada A as fundiria em silêncio.
+- **Anúncio desativado passava como ativo** quando a página responde 200 e a fonte omite
+  `publicada_em`: 9 marcadores novos de expiração.
+- **Regra estrita de localização cortava vaga remota.** "Work From Home Junior DevOps" da
+  BairesDev era reprovada pela praça declarada, com o regime escrito no título. O título
+  passou a valer como declaração — só ele, não a descrição.
+- **A suíte escrevia no diretório `.replay` real do usuário**, contaminando com dados
+  sintéticos o material que existe para reproduzir falhas reais.
+
+### Alterado
+
+- D2 passa a punir distância, não só regime: praça fora do raio derruba presencial para 1 e
+  híbrido para 2. Localização vazia ou genérica **não** é punida.
+- D2 de híbrido em Curitiba/Araucária: 8 → 7.
+- Cabeçalho de navegador em `_obter()`, com `robots.txt` respeitado e freio de 1,5 s por
+  host. O LinkedIn proíbe e fica sem enriquecimento — degradação assumida.
+- Prompt de análise: `empresa`, `regime` e `localizacao` viram campos imutáveis, com
+  exigência de D2 e D5 citarem o bloco autoritativo na justificativa.
+- Testes: 163 → 256.
+
+---
+
+## [Publicado em commits anteriores]
+
+Duas iterações de auditoria sobre o commit inicial.
 
 ### Segurança
 

@@ -12,27 +12,57 @@ de CV sob medida para cada vaga.
 ## Como funciona
 
 ```
-input (JSON/texto) ──▶ dedup pelo histórico ──▶ Gemini (parse + hard filters + notas D1-D5)
-                                                      │  structured output (Pydantic)
-                                                      ▼
-                                    Python (D2 pela regra fixa, score composto, ranking)
-                                                      │
-                                ┌─────────────────────┼──────────────────────┐
-                                ▼                     ▼                      ▼
-                       relatório no terminal   export .md/.csv      historico.json
-                                                                          │
-                                              python triar.py cv <id> ◀──┘
-                                              (bullets de CV + mensagem)
+fontes (Jooble · Adzuna · Google Search · DDGS)
+        │
+        ▼
+alfândega de URL ──▶ rede (UA de navegador, robots.txt, freio por host)
+   domínio nu,              │
+   /login, /cadastro,       ▼
+   página de listagem   extração autoritativa, em ordem de precedência:
+                            1. API de ATS (Greenhouse)
+                            2. schema.org/JobPosting da página
+                            3. campo estruturado da fonte
+                            4. texto visível
+        │
+        ▼
+filtros determinísticos (área, senioridade, validade, localização)
+        │
+        ▼
+cascata de dedup A/B/C ──▶ Gemini (notas D1-D5 + alertas)
+   URL · estrutural · Jaccard      │ structured output (Pydantic)
+                                   ▼
+              Python (campos autoritativos reimpostos, D2 pela regra fixa,
+                      punição por distância, score composto, ranking)
+                                   │
+             ┌─────────────────────┼──────────────────────┐
+             ▼                     ▼                      ▼
+    relatório no terminal   export .md/.csv       historico.json
+                                                         │
+                                     python triar.py cv <id> ◀──┘
+                                     (bullets de CV + mensagem)
 ```
 
-- O **modelo** faz o que exige julgamento: extrair os campos da vaga, aplicar os hard
-  filters (localização, área, nível) e dar notas 0–10 com justificativa. A resposta é
-  validada contra um schema Pydantic (structured outputs) — sempre JSON válido.
-- O **código** garante o determinismo: D2 segue a regra fixa (remoto=10, híbrido CWB=8,
-  presencial CWB=6), o score composto é `D1*0.30 + D2*0.25 + D3*0.20 + D4*0.15 + D5*0.10`
-  em 0–100, e o ranking/relatório seguem o formato do spec.
+**A regra que governa tudo: dado estruturado vence geração de texto.**
+
+- O **modelo** só decide o que é ambíguo — notas D1–D5, alertas, nível real e stack. Ele
+  está **proibido de preencher** `empresa`, `regime`, `localizacao` e `publicada_em`: esses
+  vêm da API do ATS, do JSON-LD ou do campo estruturado da fonte, e são reimpostos em código
+  depois da resposta. Campo sem respaldo fica vazio — vazio o D2 pune, inventado o D2
+  premiaria.
+- O **código** garante o determinismo. D2 sai da regra fixa
+  (`remoto=10 · híbrido CWB=7 · presencial CWB=6 · indefinido=4`), com punição extra quando
+  a praça está fora do raio de deslocamento (presencial=1, híbrido=2). O score composto é
+  `D1*0.30 + D2*0.25 + D3*0.20 + D4*0.15 + D5*0.10` em 0–100.
 - As regras de triagem estão em [prompts/system_prompt.md](prompts/system_prompt.md) e as
   do gerador de CV em [prompts/cv_prompt.md](prompts/cv_prompt.md) — edite sem tocar no código.
+
+### Ética de coleta
+
+O tráfego se identifica (`TriagemVagas/2.0` no User-Agent), **respeita o `robots.txt`** de
+cada host e espaça requisições ao mesmo domínio em 1,5 s. A consequência é assumida: o
+LinkedIn proíbe e por isso fica sem enriquecimento de página. A única exceção é a resolução
+de redirect do `vertexaisearch` do Google — roteador, não conteúdo: seguimos o `Location`
+via `HEAD`, sem baixar corpo, e o host de destino passa pelo `robots.txt` dele.
 
 ## Setup
 
@@ -238,8 +268,17 @@ python -m ruff check .
 Cobrem o pipeline sem chamar a API: parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
-internacional), a limpeza de parâmetros de rastreio nos links, a redação de credenciais em
-mensagens de erro e o backoff de erros transitórios da API.
+internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de
+ATS, as três camadas da cascata de dedup, a limpeza de parâmetros de rastreio nos links, a
+redação de credenciais em mensagens de erro e o backoff de erros transitórios da API.
+
+Há também **meta-testes**, que leem o texto dos prompts e conferem contra as constantes do
+código. Eles existem porque o bug mais caro do projeto veio de prompt, schema Pydantic e
+`scoring.py` discordarem entre si sem que nada quebrasse: o `Literal` do `regime` não tinha
+estado de "não sei", então o modelo era obrigado a chutar para não estourar
+`ValidationError` — e chutava "remoto", que vale 10/10 na D2. Hoje um teste garante que a
+descrição de cada dimensão no prompt corresponda à dimensão que o schema realmente tem, e
+outro que a nota do `indefinido` citada no prompt bata com `D2_POR_REGIME`.
 
 ## Estrutura
 
@@ -247,10 +286,13 @@ mensagens de erro e o backoff de erros transitórios da API.
 |---|---|
 | `triar.py` | Ponto de entrada |
 | `triagem/cli.py` | Subcomandos (analisar, historico, status, cv), paralelismo, retry |
-| `triagem/buscador.py` | Busca com Jooble, Adzuna, Google Search e fallback gratuito |
+| `triagem/buscador.py` | Busca nas 4 fontes, alfândega de URL, rede com robots.txt, extração JSON-LD |
+| `triagem/ats.py` | Conectores para ATS com API pública (Greenhouse) — padrão Adapter |
+| `triagem/dedup.py` | Cascata de deduplicação em 3 camadas, na persistência |
+| `triagem/replay.py` | Payloads brutos de falhas, para reprodução determinística |
 | `triagem/entrada.py` | Parse do input (JSON ou texto com `---`) |
 | `triagem/analisador.py` | Chamada à API Gemini com saída estruturada |
-| `triagem/scoring.py` | Regra fixa do D2 e score composto |
+| `triagem/scoring.py` | Regra fixa do D2, punição por distância e score composto |
 | `triagem/relatorio.py` | Relatório formatado no terminal |
 | `triagem/exportar.py` | Export para Markdown e CSV |
 | `triagem/historico.py` | Dedup por hash + status de candidatura (`historico.json`) |
@@ -262,3 +304,6 @@ mensagens de erro e o backoff de erros transitórios da API.
 | `perfil/cv_base.md` | CV base real (fonte de verdade do gerador; gitignorado — dados pessoais) |
 | `perfil/cv_base.exemplo.md` | Template versionável do CV base |
 | `tests/test_pipeline.py` | Testes do pipeline sem API |
+| `tests/test_dedup.py` | Testes da cascata de deduplicação |
+| `tests/test_ats.py` | Testes dos conectores de ATS (nenhum toca a rede) |
+| `migrar_historico.py` | Migração de execução única: limpa o histórico legado |
