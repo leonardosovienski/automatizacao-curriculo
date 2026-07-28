@@ -29,7 +29,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from . import cache, replay
+from . import ats, cache, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
@@ -1053,6 +1053,18 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
         return Inspecao(ativo=True, url_final=url_final)
     if any(marcador in _normalizar(bruto[:100_000]) for marcador in MARCADORES_EXPIRADOS):
         return Inspecao(ativo=False, url_final=url_final)
+    # Roteamento de ATS antes do JSON-LD: quando a vaga é hospedada num ATS com API
+    # pública, o dado vem da fonte do empregador em vez de ser lido da página. Falha
+    # aqui não interrompe nada — `rotear` devolve None e a esteira segue no fluxo
+    # legado (JSON-LD e, por último, o texto livre).
+    dados_ats = ats.rotear(link, bruto)
+    if dados_ats:
+        anuncio = _anuncio_de_contrato(dados_ats, urlsplit(url_final or link).netloc)
+        if _expirado(anuncio.expira_em):
+            replay.gravar("descarte_expirada", link, bruto, {"origem_dados": "API_GREENHOUSE"})
+            return Inspecao(ativo=False, url_final=url_final)
+        return Inspecao(ativo=True, url_final=url_final, texto_pagina=bruto, anuncio=anuncio)
+
     anuncio = _extrair_jobposting(bruto, urlsplit(url_final or link).netloc)
     # `validThrough` no passado encerra aqui: nem enriquecimento, nem LLM.
     if _expirado(anuncio.expira_em):
