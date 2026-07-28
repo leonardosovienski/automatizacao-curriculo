@@ -8,7 +8,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from triagem import cache, historico
+from triagem import cache, historico, replay
 from triagem.analisador import (
     MODELO_PADRAO,
     MODELOS,
@@ -19,13 +19,19 @@ from triagem.analisador import (
 )
 from triagem.buscador import (
     DIAS_MAXIMOS_ANUNCIO,
+    MARCADORES_EXPIRADOS,
+    MODELO_BUSCA,
     Inspecao,
     _ancorar_empresa,
+    _ancorar_localizacao,
     _busca_metasearch,
     _buscar_adzuna,
     _buscar_jooble,
     _dias_desde,
+    _e_router_de_redirect,
+    _empresa_do_jsonld_confiavel,
     _enriquecer_descricao,
+    _resolver_router,
     _fonte_estruturada,
     _host_de_anuncio,
     _inspecionar_link,
@@ -36,6 +42,7 @@ from triagem.buscador import (
     _normalizar_com_indices,
     _pontuacao_preliminar,
     _redigir_segredos,
+    _resumo_erro,
     _selecionar_candidatas,
     _texto_livre_com_cache,
     _texto_visivel,
@@ -43,16 +50,26 @@ from triagem.buscador import (
     _validar_links,
     buscar_vagas,
 )
-from triagem.cli import _inteiro_positivo, _montar_parser
+from triagem.cli import _impor_campos_autoritativos, _inteiro_positivo, _montar_parser
 from triagem.curriculo import carregar_cv_base, gerar_material, remover_blocos_privados
 from triagem.entrada import carregar_vagas
 from triagem.exportar import exportar
 from triagem.relatorio import render_relatorio
 from triagem.schema import AnaliseVaga, Dimensao, Notas, VagaEncontrada
-from triagem.scoring import parse_pesos, pontuar
+from triagem.analisador import _bloco_autoritativo
+from triagem.scoring import (
+    ALERTA_REGIME_INDEFINIDO,
+    PESOS,
+    D2_HIBRIDO_FORA_DO_RAIO,
+    D2_POR_REGIME,
+    D2_PRESENCIAL_FORA_DO_RAIO,
+    parse_pesos,
+    pontuar,
+)
 
 
-def _vaga(titulo, empresa="Empresa", link="https://exemplo.com.br/v", descricao=None,
+def _vaga(titulo, empresa="Empresa", link="https://exemplo.com.br/vagas/anuncio-12345",
+          descricao=None,
           localizacao="", publicada_em=""):
     return VagaEncontrada(
         titulo=titulo,
@@ -76,6 +93,17 @@ def _sem_espera_de_backoff(monkeypatch):
 def _cache_isolado(tmp_path, monkeypatch):
     """Nenhum teste pode ler ou escrever o cache real do usuário."""
     monkeypatch.setattr(cache, "ARQUIVO", tmp_path / "cache_busca.json")
+
+
+@pytest.fixture(autouse=True)
+def _replay_isolado(tmp_path, monkeypatch):
+    """Mesmo motivo do cache: a suíte estava gravando no .replay real do usuário.
+
+    Descoberto ao inspecionar um payload de produção e encontrar dentro dele a
+    string de uma fixture. Sem isto, o diretório de replay — que existe para
+    reproduzir falhas reais — fica contaminado com dados sintéticos.
+    """
+    monkeypatch.setattr(replay, "DIRETORIO", tmp_path / "replay")
 
 
 def _dim(nota, just="x"):
@@ -155,6 +183,460 @@ def test_gerador_cv_gemini_retorna_texto():
     assert client.models.chamada["config"].system_instruction
 
 
+# Medido ao vivo em 2026-07-27: com a ferramenta google_search, toda a família 2.0 e
+# toda a 3.x devolvem 429 RESOURCE_EXHAUSTED no tier gratuito, mesmo com chave nova e
+# zero uso. Trocar MODELO_BUSCA por um destes mata a fonte Google Search em silêncio —
+# a exceção é engolida e a busca só segue com Jooble/Adzuna/DDGS.
+MODELOS_SEM_COTA_DE_GROUNDING = frozenset(
+    {
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+    }
+)
+
+
+# ---- regressões da Fase 3 (validação ao vivo de 2026-07-27) ----------------
+#
+# Os quatro casos abaixo saíram da primeira busca real. Cada um testa os dois
+# lados: o que a correção precisa cortar e o que ela não pode cortar.
+
+
+def test_localizacao_remoto_sem_respaldo_na_origem_vira_vazio():
+    # Caso AvePoint: veio do texto livre com `localizacao: "Remoto"`, virou a #1 com
+    # D2 10/10, e o anúncio real é presencial em Da Nang, no Vietnã.
+    vaga = _vaga(
+        "Junior DevOps Engineer",
+        empresa="AvePoint",
+        link="https://www.avepoint.com/careers/job-detail?gh_jid=5594102",
+        descricao="Engenheiro DevOps Júnior para atuar com governança e resiliência.",
+        localizacao="Remoto",
+    )
+    origem = _normalizar(
+        "Junior DevOps Engineer AvePoint https://www.avepoint.com/careers/job-detail"
+        "?gh_jid=5594102 data protection governance Da Nang Vietnam"
+    )
+    assert _ancorar_localizacao(vaga, origem).localizacao == ""
+
+
+def test_localizacao_remoto_com_respaldo_na_origem_e_preservada():
+    vaga = _vaga(
+        "DevOps Jr",
+        empresa="nstech",
+        link="https://br.linkedin.com/jobs/view/devops-jr-remoto-at-nstech-4434183693",
+        localizacao="Remoto",
+    )
+    origem = _normalizar(
+        "DevOps Jr | Remoto nstech https://br.linkedin.com/jobs/view/"
+        "devops-jr-remoto-at-nstech-4434183693 vaga 100% remota para todo o Brasil"
+    )
+    assert _ancorar_localizacao(vaga, origem).localizacao == "Remoto"
+
+
+def test_localizacao_nao_le_o_remoto_de_uma_vaga_vizinha_no_blob():
+    # O texto livre traz dezenas de vagas coladas: sem a janela, o "remoto" de
+    # qualquer outra vaga da lista aprovaria esta.
+    vaga = _vaga(
+        "Junior DevOps Engineer",
+        link="https://exemplo.com/vaga-a",
+        localizacao="Remoto",
+    )
+    origem = _normalizar(
+        "Junior DevOps Engineer https://exemplo.com/vaga-a presencial no escritorio "
+        + "recheio irrelevante " * 120
+        + "Outra Vaga Qualquer https://exemplo.com/vaga-b trabalho 100% remoto"
+    )
+    assert _ancorar_localizacao(vaga, origem).localizacao == ""
+
+
+def test_localizacao_ja_vazia_continua_vazia_sem_estourar():
+    vaga = _vaga("DevOps Júnior", localizacao="")
+    assert _ancorar_localizacao(vaga, "qualquer texto").localizacao == ""
+
+
+def test_empresa_com_nome_de_portal_vira_desconhecida():
+    # Caso Nerdin: "Nerdin Vagas de TI" é o site, e o anunciante real é anônimo.
+    for nome in ("Nerdin Vagas de TI", "Buscar Vagas | Emprego", "Caderno Nacional"):
+        vaga = _vaga("DevOps Junior", empresa=nome)
+        ancorada = _ancorar_empresa(vaga, _normalizar(f"{nome} DevOps Junior Curitiba"))
+        assert ancorada.empresa == "Desconhecida", nome
+        assert ancorada.confianca_empresa == "baixa", nome
+
+
+def test_empresa_real_no_material_de_origem_nao_vira_desconhecida():
+    vaga = _vaga("DevOps Júnior", empresa="RedFox Digital Solutions")
+    origem = _normalizar("DevOps Júnior RedFox Digital Solutions Curitiba Paraná")
+    assert _ancorar_empresa(vaga, origem).empresa == "RedFox Digital Solutions"
+
+
+def test_titulo_que_afirma_remoto_vence_a_praca_declarada():
+    # Caso BairesDev: título "Work From Home", a Adzuna carimbou "Rio de Janeiro".
+    vaga = _vaga(
+        "Work From Home Junior DevOps / Rd",
+        empresa="BairesDev",
+        localizacao="Rio de Janeiro, Estado do Rio de Janeiro",
+    )
+    assert _local_declarado_incompativel(vaga) is False
+
+
+def test_remoto_solto_na_descricao_continua_sem_vencer_a_praca_declarada():
+    # O outro lado: abrir para a descrição inteira reabriria o buraco que este
+    # filtro fechou. Só título e campo de localização valem como declaração.
+    vaga = _vaga(
+        "Analista DevOps Júnior",
+        empresa="BELTIS TECNOLOGIA",
+        descricao="Ambiente moderno, com possibilidade de trabalho remoto eventual.",
+        localizacao="Barueri, Estado de São Paulo",
+    )
+    assert _local_declarado_incompativel(vaga) is True
+
+
+def test_pagina_avisa_que_nao_aceita_candidatura_conta_como_expirada():
+    texto = "<html><body>Esta vaga não está mais recebendo currículos. "
+    texto += "Não estamos aceitando novas candidaturas para esta vaga.</body></html>"
+    assert any(m in _normalizar(texto) for m in MARCADORES_EXPIRADOS)
+
+
+def test_pagina_de_vaga_ativa_nao_e_confundida_com_expirada():
+    texto = "<html><body>Candidate-se agora! Estamos aceitando candidaturas.</body></html>"
+    assert not any(m in _normalizar(texto) for m in MARCADORES_EXPIRADOS)
+
+
+def test_empresa_no_proprio_dominio_de_carreiras_e_confiavel():
+    # `avepoint.com` publicando "AvePoint" é a confirmação mais forte que existe.
+    # A regra de coincidência nome/domínio reprovava justamente esses casos.
+    assert _empresa_do_jsonld_confiavel("AvePoint", "www.avepoint.com") is True
+    assert _empresa_do_jsonld_confiavel("Gupy", "carreiras.gupy.com.br") is True
+
+
+def test_agregador_se_declarando_empregador_continua_reprovado():
+    # O outro lado: num host que É agregador, a coincidência denuncia o portal.
+    assert _empresa_do_jsonld_confiavel("Catho", "www.catho.com.br") is False
+    assert _empresa_do_jsonld_confiavel("Adzuna", "www.adzuna.com.br") is False
+
+
+def test_empregador_real_hospedado_em_agregador_continua_confiavel():
+    assert _empresa_do_jsonld_confiavel("RedFox Digital Solutions", "www.adzuna.com.br") is True
+
+
+def test_schema_aceita_regime_indefinido():
+    """Sem este estado o Literal forçava o modelo a chutar para evitar ValidationError."""
+    analise = _analise(regime="indefinido")
+    assert analise.regime == "indefinido"
+
+
+def test_regime_indefinido_recebe_nota_quatro_e_alerta():
+    vaga = pontuar(_analise(regime="indefinido").model_copy(update={"localizacao": ""}))
+    assert vaga.analise.notas.d2_regime_localizacao.nota == 4
+    assert any("não declarado" in a.lower() for a in vaga.analise.alertas)
+
+
+def test_indefinido_vale_menos_que_presencial_declarado():
+    # Omissão de metadado é pior que condição ruim conhecida: com presencial em
+    # Curitiba dá para decidir; sem regime nenhum, não.
+    assert D2_POR_REGIME["indefinido"] < D2_POR_REGIME["presencial"]
+    assert D2_POR_REGIME["presencial"] < D2_POR_REGIME["hibrido"] < D2_POR_REGIME["remoto"]
+
+
+def test_alerta_de_regime_indefinido_nao_duplica_em_reprocesso():
+    analise = _analise(regime="indefinido")
+    primeira = pontuar(analise)
+    segunda = pontuar(primeira.analise)
+    assert segunda.analise.alertas.count(ALERTA_REGIME_INDEFINIDO) == 1
+
+
+def test_regime_declarado_nao_ganha_o_alerta_de_omissao():
+    for regime in ("remoto", "hibrido", "presencial"):
+        vaga = pontuar(_analise(regime=regime))
+        assert ALERTA_REGIME_INDEFINIDO not in vaga.analise.alertas, regime
+
+
+def test_prompt_ensina_o_modelo_a_usar_indefinido():
+    # A trava só funciona se as três camadas concordarem: schema, scoring e prompt.
+    prompt = system_prompt()
+    assert '"indefinido"' in prompt or "`indefinido`" in prompt
+    assert f"= {D2_POR_REGIME['indefinido']}" in prompt
+
+
+def test_d2_pune_presencial_fora_do_raio_de_deslocamento():
+    # Caso AvePoint: presencial em Da Nang valia os mesmos 6/10 que presencial em
+    # Curitiba, porque a D2 olhava só o regime.
+    analise = _analise(regime="presencial").model_copy(
+        update={"localizacao": "Da Nang, Vietnam"}
+    )
+    vaga = pontuar(analise)
+    assert vaga.analise.notas.d2_regime_localizacao.nota == D2_PRESENCIAL_FORA_DO_RAIO
+    assert "fora do raio" in vaga.analise.notas.d2_regime_localizacao.justificativa
+
+
+def test_d2_nao_pune_presencial_em_curitiba():
+    analise = _analise(regime="presencial").model_copy(
+        update={"localizacao": "Curitiba, Paraná"}
+    )
+    assert pontuar(analise).analise.notas.d2_regime_localizacao.nota == D2_POR_REGIME["presencial"]
+
+
+def test_d2_nao_pune_vaga_remota_por_distancia():
+    # Remoto não é afetado por praça: é o ponto de ser remoto.
+    analise = _analise(regime="remoto").model_copy(update={"localizacao": "Da Nang, Vietnam"})
+    assert pontuar(analise).analise.notas.d2_regime_localizacao.nota == D2_POR_REGIME["remoto"]
+
+
+def test_d2_nao_pune_localizacao_desconhecida_ou_generica():
+    # Ausência de dado não é prova de distância — punir o vazio reintroduziria o
+    # palpite que esta sessão inteira passou removendo.
+    for local in ("", "Brasil", "Remoto", "Nacional"):
+        analise = _analise(regime="presencial").model_copy(update={"localizacao": local})
+        nota = pontuar(analise).analise.notas.d2_regime_localizacao.nota
+        assert nota == D2_POR_REGIME["presencial"], local
+
+
+def test_d2_pune_hibrido_fora_do_raio_menos_que_presencial():
+    analise = _analise(regime="hibrido").model_copy(update={"localizacao": "Maringá, PR"})
+    nota = pontuar(analise).analise.notas.d2_regime_localizacao.nota
+    assert nota == D2_HIBRIDO_FORA_DO_RAIO
+    assert D2_PRESENCIAL_FORA_DO_RAIO < D2_HIBRIDO_FORA_DO_RAIO
+
+
+def test_bloco_autoritativo_injeta_os_campos_antes_do_texto():
+    origem = json.dumps(
+        {
+            "titulo": "Junior DevOps Engineer",
+            "empresa": "AvePoint",
+            "localizacao": "Da Nang, Vietnam",
+            "regime": "",
+            "confianca_empresa": "alta",
+        },
+        ensure_ascii=False,
+    )
+    bloco = _bloco_autoritativo(origem)
+    assert "IMUTÁVEIS" in bloco
+    assert "Da Nang, Vietnam" in bloco
+    assert "AvePoint" in bloco
+    assert "(não declarado pela fonte)" in bloco  # regime vazio, marcado como tal
+    assert "cite explicitamente" in bloco
+
+
+def test_bloco_autoritativo_nao_quebra_com_texto_invalido():
+    assert _bloco_autoritativo("{não é json}") == ""
+    assert _bloco_autoritativo("") == ""
+
+
+def test_campos_autoritativos_sobrescrevem_o_palpite_do_modelo():
+    """Caso RedFox: JSON-LD dizia 'Curitiba (Remoto)', o modelo devolveu 'Brasil'.
+
+    O relatório mostra a análise, então sem esta trava a extração autoritativa
+    ganhava a batalha e perdia a guerra — o usuário lia o palpite.
+    """
+    origem = json.dumps(
+        {
+            "titulo": "DevOps Júnior",
+            "empresa": "RedFox Digital Solutions",
+            "confianca_empresa": "alta",
+            "localizacao": "Curitiba (Remoto)",
+        },
+        ensure_ascii=False,
+    )
+    analise = _analise(regime="presencial", empresa="Redfox")
+    imposta = _impor_campos_autoritativos(analise.model_copy(update={"localizacao": "Brasil"}), origem)
+    assert imposta.localizacao == "Curitiba (Remoto)"
+    assert imposta.regime == "remoto"
+    assert imposta.empresa == "RedFox Digital Solutions"
+
+
+def test_campos_autoritativos_nao_inventam_quando_a_origem_esta_vazia():
+    origem = json.dumps({"titulo": "DevOps Júnior", "empresa": "", "localizacao": ""})
+    analise = _analise(regime="hibrido", empresa="Inferida pelo modelo")
+    imposta = _impor_campos_autoritativos(analise, origem)
+    assert imposta.empresa == "Inferida pelo modelo"
+    assert imposta.regime == "hibrido"
+
+
+def test_campos_autoritativos_ignoram_empresa_de_baixa_confianca():
+    origem = json.dumps(
+        {"empresa": "Nerdin Vagas de TI", "confianca_empresa": "baixa", "localizacao": ""}
+    )
+    analise = _analise(empresa="Desconhecida")
+    assert _impor_campos_autoritativos(analise, origem).empresa == "Desconhecida"
+
+
+def test_campos_autoritativos_sobrevivem_a_texto_corrompido():
+    analise = _analise()
+    assert _impor_campos_autoritativos(analise, "{não é json") is analise
+
+
+def test_prompt_de_analise_proibe_inferir_regime():
+    # Guarda o texto do prompt: foi a linha "infira com cautela" que produziu a
+    # vaga do Vietnã classificada como 100% remota com D2 10/10.
+    prompt = system_prompt()
+    assert "infira com cautela" not in prompt
+    assert "NÃO infira" in prompt
+    assert "copie-o" in prompt
+
+
+def test_prompt_descreve_as_dimensoes_que_o_schema_realmente_tem():
+    """Guarda contra rótulo trocado de dimensão — a falha que não quebra nada.
+
+    Os nomes dos campos são forçados pelo Pydantic, então um prompt que descreva D1
+    como 'stack' faria o modelo escrever avaliação de stack dentro de
+    `d1_crescimento`, que pesa 30%. O score sairia errado e nada acusaria.
+    """
+    prompt = system_prompt().lower()
+    esperado = {
+        "d1": "crescimento",
+        "d2": "regime",
+        "d3": "stack fit",
+        "d4": "inglês",
+        "d5": "nível real",
+    }
+    for dimensao, termo in esperado.items():
+        linha = next(
+            (l for l in prompt.splitlines() if l.strip().startswith(f"**{dimensao} —")), None
+        )
+        assert linha is not None, f"prompt não descreve {dimensao}"
+        assert termo in linha, f"{dimensao} deveria ser sobre {termo!r}, veio: {linha!r}"
+    # E os pesos citados no prompt precisam bater com os de scoring.py.
+    for chave, peso in PESOS.items():
+        assert f"peso {int(peso * 100)}%" in prompt, f"peso de {chave} divergente no prompt"
+
+
+def test_prompt_exige_json_puro_sem_cerca_de_markdown():
+    prompt = system_prompt()
+    assert "ETAPA 3" in prompt
+    assert "AnaliseVaga" in prompt
+    assert "sem cerca de markdown" in prompt.lower()
+
+
+def test_redirect_para_listagem_generica_nao_vira_chave_de_dedup(monkeypatch):
+    """Caso GeekHunter: a página da vaga redireciona para `/pt/vagas`.
+
+    Sem o guarda, duas vagas distintas do mesmo portal ganham `link_final`
+    idêntico, `chave_dedup()` devolve a mesma string e a Camada A as funde.
+    """
+    vagas = [
+        _vaga("DevOps Júnior", empresa="Code Group",
+              link="https://geekhunter.com.br/vagas/analista-devops-junior-em-code-group"),
+        _vaga("Desenvolvedor C# Júnior", empresa="Outra Empresa",
+              link="https://geekhunter.com.br/vagas/desenvolvedor-csharp-junior-em-outra"),
+    ]
+    monkeypatch.setattr(
+        "triagem.buscador._inspecionar_link",
+        lambda vaga: Inspecao(ativo=True, url_final="https://www.geekhunter.com.br/pt/vagas"),
+    )
+    ativas = _validar_links(vagas, 10)
+    assert len(ativas) == 2, "vagas distintas foram fundidas pelo redirect genérico"
+    assert all(v.link_final == "" for v in ativas)
+    assert len({v.chave_dedup() for v in ativas}) == 2
+
+
+def test_redirect_para_pagina_de_vaga_real_continua_virando_link_final(monkeypatch):
+    vaga = _vaga("DevOps Júnior", link="https://agregador.com.br/vagas/123456")
+    destino = "https://empresa.com.br/carreiras/devops-junior-987654"
+    monkeypatch.setattr(
+        "triagem.buscador._inspecionar_link",
+        lambda v: Inspecao(ativo=True, url_final=destino),
+    )
+    ativas = _validar_links([vaga], 10)
+    assert ativas[0].link_final == destino
+
+
+def test_router_de_redirect_reconhece_so_o_vertexaisearch():
+    assert _e_router_de_redirect(
+        "https://vertexaisearch.cloud.google.com/grounding-api-redirect/ABC"
+    )
+    # A exceção não pode vazar para host de conteúdo: o LinkedIn continua bloqueado.
+    assert not _e_router_de_redirect("https://br.linkedin.com/jobs/view/x-4416146595")
+    assert not _e_router_de_redirect("https://www.adzuna.com.br/details/1")
+    assert not _e_router_de_redirect("https://cloud.google.com/vertexaisearch")
+
+
+def test_resolver_router_segue_location_sem_baixar_corpo(monkeypatch):
+    chamadas = []
+
+    class _Resposta:
+        def __init__(self, destino):
+            self.headers = {"location": destino} if destino else {}
+
+        @property
+        def text(self):  # pragma: no cover - falha o teste se alguém ler o corpo
+            raise AssertionError("o corpo do roteador não deve ser lido")
+
+    def _head(url, **kwargs):
+        chamadas.append(("head", url, kwargs.get("follow_redirects")))
+        return _Resposta("https://www.adzuna.com.br/details/5815842825")
+
+    monkeypatch.setattr("triagem.buscador.httpx.head", _head)
+    monkeypatch.setattr("triagem.buscador._esperar_vez", lambda _: None)
+
+    final = _resolver_router(
+        "https://vertexaisearch.cloud.google.com/grounding-api-redirect/ABC"
+    )
+    assert final == "https://www.adzuna.com.br/details/5815842825"
+    # HEAD, e explicitamente sem seguir redirect sozinho.
+    assert chamadas and chamadas[0][0] == "head" and chamadas[0][2] is False
+
+
+def test_resolver_router_devolve_a_original_quando_nao_ha_location(monkeypatch):
+    sem_location = type("R", (), {"headers": {}})()
+    monkeypatch.setattr("triagem.buscador.httpx.head", lambda url, **k: sem_location)
+    monkeypatch.setattr("triagem.buscador.httpx.get", lambda url, **k: sem_location)
+    monkeypatch.setattr("triagem.buscador._esperar_vez", lambda _: None)
+    url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/X"
+    assert _resolver_router(url) == url
+
+
+def test_resolver_router_nao_toca_em_url_que_nao_e_roteador(monkeypatch):
+    def _explode(*a, **k):
+        raise AssertionError("não deveria haver requisição para host normal")
+
+    monkeypatch.setattr("triagem.buscador.httpx.head", _explode)
+    monkeypatch.setattr("triagem.buscador.httpx.get", _explode)
+    url = "https://www.adzuna.com.br/details/1"
+    assert _resolver_router(url) == url
+
+
+def test_resumo_erro_preserva_o_motivo_e_nao_so_o_tipo(monkeypatch):
+    # Sem a mensagem, 429 de cota e 404 de modelo inexistente ficam indistinguíveis.
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    erro = RuntimeError("429 RESOURCE_EXHAUSTED. {'error': {'code': 429}}")
+    resumo = _resumo_erro(erro)
+    assert "RuntimeError" in resumo
+    assert "429" in resumo
+    assert "RESOURCE_EXHAUSTED" in resumo
+
+
+def test_resumo_erro_achata_e_trunca_payload_gigante(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    resumo = _resumo_erro(RuntimeError("linha1\nlinha2\n" + "x" * 5000), limite=100)
+    assert "\n" not in resumo
+    assert resumo.endswith("…")
+    assert len(resumo) < 200
+
+
+def test_resumo_erro_redige_credencial_vinda_na_mensagem(monkeypatch):
+    # A mensagem de erro da API pode ecoar a URL com a credencial embutida.
+    monkeypatch.setenv("ADZUNA_APP_ID", "app_id_secreto_123")
+    erro = RuntimeError("400 em https://api.adzuna.com/x?app_id=app_id_secreto_123&q=1")
+    resumo = _resumo_erro(erro)
+    assert "app_id_secreto_123" not in resumo
+    assert "<ADZUNA_APP_ID>" in resumo
+
+
+def test_modelo_de_busca_tem_cota_de_grounding():
+    assert MODELO_BUSCA not in MODELOS_SEM_COTA_DE_GROUNDING
+
+
+def test_modelo_de_busca_nao_e_o_modelo_de_analise():
+    # A análise roda uma vez por vaga e precisa continuar num modelo barato; a busca
+    # roda uma vez por execução. Igualar os dois joga o volume no modelo caro.
+    assert MODELO_BUSCA != MODELOS["lite"]
+
+
 def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
     descoberta = _resposta_gemini("Encontrei duas vagas atuais.")
     json_vagas = json.dumps(
@@ -164,7 +646,7 @@ def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
                     "titulo": "Dev .NET Jr",
                     "empresa": "Empresa",
                     "descricao": "Vaga remota para desenvolvimento C# e .NET com APIs REST.",
-                    "link": "https://example.com/vaga",
+                    "link": "https://example.com/vagas/dev-net-jr-8821",
                     "origem": "site",
                     "publicada_em": "2026-07-20",
                 },
@@ -172,7 +654,7 @@ def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
                     "titulo": "Dev .NET Jr duplicada",
                     "empresa": "Empresa",
                     "descricao": "Mesma vaga remota para desenvolvimento C# e .NET.",
-                    "link": "https://example.com/vaga",
+                    "link": "https://example.com/vagas/dev-net-jr-8821",
                     "origem": "site",
                     "publicada_em": "",
                 },
@@ -360,9 +842,9 @@ def test_area_e_decidida_pelo_titulo_e_nao_pela_descricao():
         _vaga("Full Stack Developer", descricao="Vaga remota com React, Node e cloud na AWS para o time."),
     ]
     dentro = [
-        _vaga("DevSecOps Júnior", link="https://exemplo.com.br/1",
+        _vaga("DevSecOps Júnior", link="https://exemplo.com.br/vagas/1001",
               descricao="Vaga remota no Brasil com pipelines e segurança."),
-        _vaga("Cloud Engineer Jr", empresa="Outra", link="https://exemplo.com.br/2",
+        _vaga("Cloud Engineer Jr", empresa="Outra", link="https://exemplo.com.br/vagas/1002",
               descricao="Vaga remota no Brasil com Azure e Terraform."),
     ]
     assert _selecionar_candidatas(fora, 10) == []
@@ -1032,13 +1514,13 @@ def test_prefiltro_remove_senior_e_deduplica_semanticamente():
         vaga(
             "Desenvolvedor .NET Júnior",
             "Empresa B",
-            "https://portal1.example/vaga",
+            "https://portal1.example/vagas/net-junior-4471",
             "Vaga remota no Brasil para Júnior com C#, .NET e APIs REST.",
         ),
         vaga(
             "Desenvolvedor .NET Jr",
             "Empresa B",
-            "https://portal2.example/mesma-vaga",
+            "https://portal2.example/vagas/mesma-vaga-net-jr-9912",
             "Mesma vaga remota no Brasil para Jr com C#, .NET e APIs REST.",
         ),
         vaga(
@@ -1148,7 +1630,10 @@ def test_schema_exige_notas_em_vaga_aprovada():
         AnaliseVaga.model_validate(dados)
 
 
-@pytest.mark.parametrize("regime,esperado", [("remoto", 10), ("hibrido", 8), ("presencial", 6)])
+@pytest.mark.parametrize(
+    "regime,esperado",
+    [("remoto", 10), ("hibrido", 7), ("presencial", 6), ("indefinido", 4)],
+)
 def test_d2_por_regime(regime, esperado):
     vaga = pontuar(_analise(regime=regime, d2=0))
     assert vaga.analise.notas.d2_regime_localizacao.nota == esperado

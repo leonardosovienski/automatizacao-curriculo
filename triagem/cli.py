@@ -12,9 +12,16 @@ from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 
-from . import cache, historico
+from . import cache, dedup, historico
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
-from .buscador import _redigir_segredos, _url_canonica, buscar_vagas, testar_fontes
+from .buscador import (
+    _normalizar,
+    _redigir_segredos,
+    _remoto_afirmado,
+    _url_canonica,
+    buscar_vagas,
+    testar_fontes,
+)
 from .curriculo import carregar_cv_base, gerar_material
 from .entrada import carregar_arquivo, carregar_vagas
 from .exportar import exportar
@@ -199,10 +206,57 @@ def _cmd_buscar(args) -> int:
     # seguir os redirects do agregador) é a chave estável — e é a mesma quando a
     # vaga chega pela Jooble e pela Adzuna.
     chaves = [_url_canonica(vaga.chave_dedup()) for vaga in vagas]
-    return _cmd_analisar(args, textos, chaves)
+    # A URL canônica cobre só a Camada A. As camadas B e C precisam de empresa,
+    # título e confiança para reconhecer a mesma vaga vinda de outro portal.
+    registros = [
+        dedup.Registro(
+            ident="",
+            url=chaves[indice],
+            empresa=vaga.empresa,
+            titulo=vaga.titulo,
+            confianca=vaga.confianca_empresa,
+            localidade=vaga.localizacao,
+        )
+        for indice, vaga in enumerate(vagas)
+    ]
+    return _cmd_analisar(args, textos, chaves, registros)
 
 
-def _cmd_analisar(args, textos=None, chaves=None) -> int:
+def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> AnaliseVaga:
+    """Devolve os campos estruturados ao dono deles, depois que o modelo respondeu.
+
+    O prompt manda copiar `empresa`, `regime` e `localizacao` da entrada quando eles
+    chegam resolvidos — mas prompt é pedido, não garantia. Medido em 2026-07-27: a
+    vaga da RedFox tinha `localizacao: "Curitiba (Remoto)"` extraída do JSON-LD do
+    empregador e o modelo devolveu `"Brasil"` na análise, que é o valor que o
+    relatório mostra. A extração ganhava e a exibição perdia.
+
+    Só sobrescreve o que tem respaldo: campo vazio na origem deixa a análise como
+    está, porque aqui não é lugar de inventar tampouco.
+    """
+    try:
+        origem = json.loads(texto_origem or "{}")
+    except ValueError:
+        return analise
+    if not isinstance(origem, dict):
+        return analise
+
+    mudancas: dict = {}
+    empresa = (origem.get("empresa") or "").strip()
+    if empresa and origem.get("confianca_empresa") == "alta":
+        mudancas["empresa"] = empresa
+
+    local = (origem.get("localizacao") or "").strip()
+    if local:
+        mudancas["localizacao"] = local
+        # A fonte declarando remoto vence a inferência do modelo sobre o regime.
+        if _remoto_afirmado(_normalizar(local)):
+            mudancas["regime"] = "remoto"
+
+    return analise.model_copy(update=mudancas) if mudancas else analise
+
+
+def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
     try:
         pesos = parse_pesos(args.pesos) if getattr(args, "pesos", None) else None
     except ValueError as e:
@@ -238,6 +292,16 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
 
     for indice, texto in enumerate(textos):
         vid = historico.gerar_id(chaves[indice] if chaves else texto)
+        # Cascata de dedup: a mesma vaga em outro portal tem outra URL e, por
+        # consequência, outro id. Sem isto ela é reanalisada e paga de novo.
+        if registros:
+            registros[indice].id = vid
+            existente = dedup.resolver_id(hist, registros[indice])
+            if existente and existente != vid:
+                print(f"  [{existente}] mesma vaga já vista em outra fonte "
+                      f"({registros[indice].url}) — reaproveitando.")
+                historico.registrar_alias(hist, existente, registros[indice].url)
+                vid = existente
         if vid in vistos:
             # Antes sumia em silêncio: o relatório dizia "TOTAL ANALISADAS: 1"
             # para um arquivo de 3 itens, sem explicar o que houve com os outros.
@@ -289,7 +353,7 @@ def _cmd_analisar(args, textos=None, chaves=None) -> int:
         for vid, texto in pendentes:
             if vid not in analises:
                 continue
-            vaga = pontuar(analises[vid], vid, pesos)
+            vaga = pontuar(_impor_campos_autoritativos(analises[vid], texto), vid, pesos)
             historico.registrar(hist, vaga, texto)
             resultados.append(vaga)
 

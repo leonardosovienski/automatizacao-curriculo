@@ -1,5 +1,6 @@
 """Chamada à API do Google Gemini com saída estruturada."""
 
+import json
 import random
 import time
 from functools import lru_cache
@@ -86,13 +87,51 @@ def gerar_com_retentativa(client: genai.Client, **kwargs):
     raise ultimo  # pragma: no cover — inalcançável, o laço sempre retorna ou levanta
 
 
+CAMPOS_AUTORITATIVOS = ("empresa", "regime", "localizacao", "publicada_em")
+
+
+def _bloco_autoritativo(texto_vaga: str) -> str:
+    """Repete os campos resolvidos em destaque, antes do texto bruto da vaga.
+
+    Eles já estão dentro do JSON da vaga, mas dissolvidos entre outros quinze
+    campos — o modelo os trata como mais um dado a reinterpretar. Marcá-los como
+    imutáveis ANTES do texto muda a postura dele de extrator para avaliador, e faz
+    a justificativa das dimensões citar a localização real em vez de deduzir uma.
+    """
+    try:
+        origem = json.loads(texto_vaga or "{}")
+    except ValueError:
+        return ""
+    if not isinstance(origem, dict):
+        return ""
+    valores = {campo: str(origem.get(campo) or "").strip() for campo in CAMPOS_AUTORITATIVOS}
+    # Sem nenhum campo resolvido não há verdade a injetar, e um bloco só de
+    # "(não declarado)" é ruído que compete com o texto real da vaga.
+    if not any(valores.values()):
+        return ""
+    linhas = [
+        f"- {campo}: {valor if valor else '(não declarado pela fonte)'}"
+        for campo, valor in valores.items()
+    ]
+    if origem.get("confianca_empresa") == "alta":
+        linhas.append("- (empresa confirmada em dado estruturado do empregador)")
+    return (
+        "=== METADADOS AUTORITATIVOS — IMUTÁVEIS ===\n"
+        + "\n".join(linhas)
+        + "\n\nEstes valores vêm do empregador ou da API da fonte, não do texto abaixo.\n"
+        "Copie-os para a saída sem alterar. Ao justificar d2_regime_localizacao e\n"
+        "d5_nivel_real, cite explicitamente o regime e a localização acima — se a\n"
+        "justificativa contradisser este bloco, ela está errada.\n\n"
+    )
+
+
 def analisar_vaga(
     client: genai.Client, texto_vaga: str, modelo: str = MODELO_PADRAO
 ) -> AnaliseVaga:
     response = gerar_com_retentativa(
         client,
         model=MODELOS[modelo],
-        contents=f"Analise esta vaga:\n\n{texto_vaga}",
+        contents=f"{_bloco_autoritativo(texto_vaga)}Analise esta vaga:\n\n{texto_vaga}",
         config=types.GenerateContentConfig(
             system_instruction=system_prompt(),
             thinking_config=types.ThinkingConfig(

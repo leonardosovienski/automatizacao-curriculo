@@ -25,7 +25,20 @@ class AnaliseVaga(BaseModel):
 
     titulo_normalizado: str
     empresa: str
-    regime: Literal["remoto", "hibrido", "presencial"]
+    # "indefinido" existe para que a regra anti-alucinação seja cumprível. Sem ele o
+    # Literal não tinha estado de "não sei", e o modelo era obrigado a escolher uma
+    # das três opções para não estourar ValidationError — escolhia "remoto", que é a
+    # mais provável em vagas de TI e vale 10/10 na D2. Medido em 2026-07-27: três de
+    # três vagas com regime não declarado saíram como remoto, e o próprio modelo
+    # documentou a inferência nos alertas ("assumido como remoto por padrão de
+    # mercado"). O prompt proibia; o schema tornava a obediência impossível.
+    regime: Literal["remoto", "hibrido", "presencial", "indefinido"] = Field(
+        ...,
+        description=(
+            "Modalidade de trabalho. Use 'indefinido' estritamente quando o bloco "
+            "autoritativo não declarar o regime e a descrição não o afirmar."
+        ),
+    )
     localizacao: str
     nivel_real: Literal["estagio", "jr", "pleno_disfarcado", "senior"]
     stack_exigida: List[str]

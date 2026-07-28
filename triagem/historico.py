@@ -85,6 +85,21 @@ def salvar(hist: Dict[str, dict]) -> None:
         raise
 
 
+def registrar_alias(hist: Dict[str, dict], vid: str, url: str) -> None:
+    """Guarda a URL de origem alternativa da mesma vaga.
+
+    A duplicata nunca é descartada em silêncio: o link do LinkedIn e o do site da
+    empresa não são intercambiáveis para quem vai se candidatar, e a entrada
+    vencedora precisa carregar os dois caminhos.
+    """
+    entrada = hist.get(vid)
+    if entrada is None or not (url or "").strip():
+        return
+    aliases = entrada.setdefault("aliases", [])
+    if url not in aliases:
+        aliases.append(url)
+
+
 def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
     """Insere/atualiza a vaga no histórico, preservando status manual em re-análises."""
     anterior = hist.get(vaga.id, {})

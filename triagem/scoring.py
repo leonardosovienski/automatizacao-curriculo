@@ -12,8 +12,55 @@ PESOS = {
     "d5_nivel_real": 0.10,
 }
 
-# Regra fixa do spec — sobrescreve a nota do modelo para garantir consistência
-D2_POR_REGIME = {"remoto": 10, "hibrido": 8, "presencial": 6}
+# Regra fixa do spec — sobrescreve a nota do modelo para garantir consistência.
+# `indefinido` vale menos que o pior caso conhecido: omissão de metadado pelo
+# anunciante é pior que uma condição ruim declarada, porque não dá para decidir.
+D2_POR_REGIME = {"remoto": 10, "hibrido": 7, "presencial": 6, "indefinido": 4}
+
+ALERTA_REGIME_INDEFINIDO = (
+    "Regime não declarado pela fonte — nota D2 reduzida por omissão, confirmar no anúncio."
+)
+
+# A regra acima olhava só o regime, e presencial no Vietnã valia os mesmos 6/10 que
+# presencial em Curitiba. Medido em 2026-07-27: a vaga da AvePoint em Da Nang virou a
+# recomendação #1 com 78/100. A causa raiz (localização inventada na extração) já foi
+# fechada, mas a D2 continuava sem saber a diferença entre "do lado" e "outro
+# continente" — bastava a próxima falha de extração para o mesmo resultado voltar.
+#
+# Nota máxima quando a vaga NÃO é remota e a praça está fora do raio aceitável.
+# Não é descarte: quem descarta é o hard filter, com a descrição inteira na mão. Aqui
+# é a nota refletindo que deslocar-se para lá é inviável.
+D2_PRESENCIAL_FORA_DO_RAIO = 1
+D2_HIBRIDO_FORA_DO_RAIO = 2
+
+CIDADES_ACEITAS = ("curitiba", "araucaria", "sao jose dos pinhais", "colombo", "pinhais")
+# Termos que não identificam praça: não servem para provar proximidade nem distância.
+LOCAL_SEM_PRACA = ("brasil", "brazil", "remoto", "remota", "remote", "home office",
+                   "hibrido", "nacional", "todo o pais", "anywhere", "")
+
+
+def _fora_do_raio(localizacao: str) -> bool:
+    """True só quando a praça é conhecida E claramente longe de Curitiba.
+
+    Localização vazia ou genérica devolve False de propósito: ausência de dado não é
+    prova de distância, e punir o desconhecido reintroduziria o palpite que passamos
+    a sessão inteira removendo.
+    """
+    texto = " ".join((localizacao or "").lower().split())
+    if not texto:
+        return False
+    sem_acento = (
+        texto.replace("á", "a").replace("ã", "a").replace("â", "a")
+        .replace("é", "e").replace("ê", "e").replace("í", "i")
+        .replace("ó", "o").replace("ô", "o").replace("õ", "o").replace("ú", "u")
+        .replace("ç", "c")
+    )
+    if any(cidade in sem_acento for cidade in CIDADES_ACEITAS):
+        return False
+    if any(termo and termo in sem_acento for termo in LOCAL_SEM_PRACA):
+        return False
+    # Sobrou uma praça específica que não é nenhuma das aceitas.
+    return True
 
 
 def parse_pesos(texto: str) -> Dict[str, float]:
@@ -64,9 +111,22 @@ def pontuar(
 
     notas = analise.notas
     nota_d2 = D2_POR_REGIME[analise.regime]
+    motivo = "regra fixa do regime"
+    # O alerta é determinístico e não depende do modelo lembrar de escrevê-lo: a nota
+    # sozinha se dilui no score composto, e omissão de regime é o tipo de coisa que
+    # precisa aparecer na leitura rápida do relatório.
+    if analise.regime == "indefinido" and ALERTA_REGIME_INDEFINIDO not in analise.alertas:
+        analise.alertas.append(ALERTA_REGIME_INDEFINIDO)
+    # Remoto não é afetado por distância — é o ponto de ser remoto.
+    if analise.regime != "remoto" and _fora_do_raio(analise.localizacao):
+        nota_d2 = (
+            D2_PRESENCIAL_FORA_DO_RAIO if analise.regime == "presencial"
+            else D2_HIBRIDO_FORA_DO_RAIO
+        )
+        motivo = f"{analise.regime} em {analise.localizacao.strip()}, fora do raio de deslocamento"
     if notas.d2_regime_localizacao.nota != nota_d2:
         notas.d2_regime_localizacao.nota = nota_d2
-        notas.d2_regime_localizacao.justificativa += " (nota ajustada pela regra fixa do regime)"
+        notas.d2_regime_localizacao.justificativa += f" (nota ajustada: {motivo})"
 
     score = (
         notas.d1_crescimento.nota * pesos["d1_crescimento"]
