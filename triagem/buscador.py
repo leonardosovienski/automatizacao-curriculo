@@ -822,7 +822,19 @@ def _empresa_do_jsonld_confiavel(nome: str, host: str) -> bool:
         return False
     if _empresa_e_portal(normalizado):
         return False
-    dominio = (host or "").lower().removeprefix("www.").split(".")[0]
+    # A coincidência entre nome e domínio só é suspeita quando o host é um
+    # agregador — aí significa que o portal se declarou empregador. No site de
+    # carreiras da própria empresa ela é o oposto: `avepoint.com` publicando
+    # "AvePoint" é a confirmação mais forte que existe, e a regra anterior
+    # reprovava justamente os casos mais confiáveis.
+    limpo = (host or "").lower().removeprefix("www.")
+    e_agregador = any(
+        limpo == portal or limpo.endswith(f".{portal}")
+        for portal in PORTAIS_BRASILEIROS + PORTAIS_INTERNACIONAIS + HOSTS_NAO_CANONICOS
+    )
+    if not e_agregador:
+        return True
+    dominio = limpo.split(".")[0]
     return not (dominio and dominio in normalizado.split())
 
 
@@ -846,22 +858,41 @@ def _blocos_jsonld(html_bruto: str):
             yield item
 
 
+def _anuncio_de_contrato(dados: dict, host: str = "") -> Anuncio:
+    """Converte o contrato comum num `Anuncio`.
+
+    Um só mapeamento para as duas origens — o `schema.org/JobPosting` lido da página
+    e o payload de um adapter de ATS (`triagem/ats.py`), que devolve as mesmas
+    chaves de propósito. Dois mapeamentos separados divergiriam com o tempo, e a
+    divergência apareceria como campo faltando numa das origens.
+    """
+    organizacao = dados.get("hiringOrganization")
+    nome = ""
+    if isinstance(organizacao, dict):
+        nome = str(organizacao.get("name") or "").strip()
+    elif isinstance(organizacao, str):
+        nome = organizacao.strip()
+
+    tipo_local = str(dados.get("jobLocationType") or "").upper()
+
+    return Anuncio(
+        empresa=nome,
+        empresa_confiavel=bool(nome) and _empresa_do_jsonld_confiavel(nome, host),
+        remoto=True if "TELECOMMUTE" in tipo_local else None,
+        localidade=str(dados.get("addressLocality") or "").strip(),
+        publicada_em=str(dados.get("datePosted") or "").strip(),
+        expira_em=str(dados.get("validThrough") or "").strip(),
+        descricao=_texto_visivel(str(dados.get("description") or "")),
+    )
+
+
 def _extrair_jobposting(html_bruto: str, host: str = "") -> Anuncio:
     """Lê o schema.org/JobPosting da página. Campo ausente fica vazio, nunca inferido."""
     for item in _blocos_jsonld(html_bruto):
         if "JobPosting" not in str(item.get("@type", "")):
             continue
 
-        organizacao = item.get("hiringOrganization")
-        nome = ""
-        if isinstance(organizacao, dict):
-            nome = str(organizacao.get("name") or "").strip()
-        elif isinstance(organizacao, str):
-            nome = organizacao.strip()
-
-        tipo_local = str(item.get("jobLocationType") or "").upper()
-        remoto = True if "TELECOMMUTE" in tipo_local else None
-
+        # No schema.org a localidade fica aninhada; o contrato comum a quer plana.
         localidade = ""
         local = item.get("jobLocation")
         primeiro = local[0] if isinstance(local, list) and local else local
@@ -870,17 +901,7 @@ def _extrair_jobposting(html_bruto: str, host: str = "") -> Anuncio:
             if isinstance(endereco, dict):
                 localidade = str(endereco.get("addressLocality") or "").strip()
 
-        descricao = _texto_visivel(str(item.get("description") or ""))
-
-        return Anuncio(
-            empresa=nome,
-            empresa_confiavel=bool(nome) and _empresa_do_jsonld_confiavel(nome, host),
-            remoto=remoto,
-            localidade=localidade,
-            publicada_em=str(item.get("datePosted") or "").strip(),
-            expira_em=str(item.get("validThrough") or "").strip(),
-            descricao=descricao,
-        )
+        return _anuncio_de_contrato({**item, "addressLocality": localidade}, host)
     return Anuncio()
 
 

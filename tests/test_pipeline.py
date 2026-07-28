@@ -29,6 +29,7 @@ from triagem.buscador import (
     _buscar_jooble,
     _dias_desde,
     _e_router_de_redirect,
+    _empresa_do_jsonld_confiavel,
     _enriquecer_descricao,
     _resolver_router,
     _fonte_estruturada,
@@ -57,6 +58,8 @@ from triagem.relatorio import render_relatorio
 from triagem.schema import AnaliseVaga, Dimensao, Notas, VagaEncontrada
 from triagem.analisador import _bloco_autoritativo
 from triagem.scoring import (
+    ALERTA_REGIME_INDEFINIDO,
+    PESOS,
     D2_HIBRIDO_FORA_DO_RAIO,
     D2_POR_REGIME,
     D2_PRESENCIAL_FORA_DO_RAIO,
@@ -304,6 +307,62 @@ def test_pagina_de_vaga_ativa_nao_e_confundida_com_expirada():
     assert not any(m in _normalizar(texto) for m in MARCADORES_EXPIRADOS)
 
 
+def test_empresa_no_proprio_dominio_de_carreiras_e_confiavel():
+    # `avepoint.com` publicando "AvePoint" é a confirmação mais forte que existe.
+    # A regra de coincidência nome/domínio reprovava justamente esses casos.
+    assert _empresa_do_jsonld_confiavel("AvePoint", "www.avepoint.com") is True
+    assert _empresa_do_jsonld_confiavel("Gupy", "carreiras.gupy.com.br") is True
+
+
+def test_agregador_se_declarando_empregador_continua_reprovado():
+    # O outro lado: num host que É agregador, a coincidência denuncia o portal.
+    assert _empresa_do_jsonld_confiavel("Catho", "www.catho.com.br") is False
+    assert _empresa_do_jsonld_confiavel("Adzuna", "www.adzuna.com.br") is False
+
+
+def test_empregador_real_hospedado_em_agregador_continua_confiavel():
+    assert _empresa_do_jsonld_confiavel("RedFox Digital Solutions", "www.adzuna.com.br") is True
+
+
+def test_schema_aceita_regime_indefinido():
+    """Sem este estado o Literal forçava o modelo a chutar para evitar ValidationError."""
+    analise = _analise(regime="indefinido")
+    assert analise.regime == "indefinido"
+
+
+def test_regime_indefinido_recebe_nota_quatro_e_alerta():
+    vaga = pontuar(_analise(regime="indefinido").model_copy(update={"localizacao": ""}))
+    assert vaga.analise.notas.d2_regime_localizacao.nota == 4
+    assert any("não declarado" in a.lower() for a in vaga.analise.alertas)
+
+
+def test_indefinido_vale_menos_que_presencial_declarado():
+    # Omissão de metadado é pior que condição ruim conhecida: com presencial em
+    # Curitiba dá para decidir; sem regime nenhum, não.
+    assert D2_POR_REGIME["indefinido"] < D2_POR_REGIME["presencial"]
+    assert D2_POR_REGIME["presencial"] < D2_POR_REGIME["hibrido"] < D2_POR_REGIME["remoto"]
+
+
+def test_alerta_de_regime_indefinido_nao_duplica_em_reprocesso():
+    analise = _analise(regime="indefinido")
+    primeira = pontuar(analise)
+    segunda = pontuar(primeira.analise)
+    assert segunda.analise.alertas.count(ALERTA_REGIME_INDEFINIDO) == 1
+
+
+def test_regime_declarado_nao_ganha_o_alerta_de_omissao():
+    for regime in ("remoto", "hibrido", "presencial"):
+        vaga = pontuar(_analise(regime=regime))
+        assert ALERTA_REGIME_INDEFINIDO not in vaga.analise.alertas, regime
+
+
+def test_prompt_ensina_o_modelo_a_usar_indefinido():
+    # A trava só funciona se as três camadas concordarem: schema, scoring e prompt.
+    prompt = system_prompt()
+    assert '"indefinido"' in prompt or "`indefinido`" in prompt
+    assert f"= {D2_POR_REGIME['indefinido']}" in prompt
+
+
 def test_d2_pune_presencial_fora_do_raio_de_deslocamento():
     # Caso AvePoint: presencial em Da Nang valia os mesmos 6/10 que presencial em
     # Curitiba, porque a D2 olhava só o regime.
@@ -418,6 +477,39 @@ def test_prompt_de_analise_proibe_inferir_regime():
     assert "infira com cautela" not in prompt
     assert "NÃO infira" in prompt
     assert "copie-o" in prompt
+
+
+def test_prompt_descreve_as_dimensoes_que_o_schema_realmente_tem():
+    """Guarda contra rótulo trocado de dimensão — a falha que não quebra nada.
+
+    Os nomes dos campos são forçados pelo Pydantic, então um prompt que descreva D1
+    como 'stack' faria o modelo escrever avaliação de stack dentro de
+    `d1_crescimento`, que pesa 30%. O score sairia errado e nada acusaria.
+    """
+    prompt = system_prompt().lower()
+    esperado = {
+        "d1": "crescimento",
+        "d2": "regime",
+        "d3": "stack fit",
+        "d4": "inglês",
+        "d5": "nível real",
+    }
+    for dimensao, termo in esperado.items():
+        linha = next(
+            (l for l in prompt.splitlines() if l.strip().startswith(f"**{dimensao} —")), None
+        )
+        assert linha is not None, f"prompt não descreve {dimensao}"
+        assert termo in linha, f"{dimensao} deveria ser sobre {termo!r}, veio: {linha!r}"
+    # E os pesos citados no prompt precisam bater com os de scoring.py.
+    for chave, peso in PESOS.items():
+        assert f"peso {int(peso * 100)}%" in prompt, f"peso de {chave} divergente no prompt"
+
+
+def test_prompt_exige_json_puro_sem_cerca_de_markdown():
+    prompt = system_prompt()
+    assert "ETAPA 3" in prompt
+    assert "AnaliseVaga" in prompt
+    assert "sem cerca de markdown" in prompt.lower()
 
 
 def test_redirect_para_listagem_generica_nao_vira_chave_de_dedup(monkeypatch):
@@ -1538,7 +1630,10 @@ def test_schema_exige_notas_em_vaga_aprovada():
         AnaliseVaga.model_validate(dados)
 
 
-@pytest.mark.parametrize("regime,esperado", [("remoto", 10), ("hibrido", 8), ("presencial", 6)])
+@pytest.mark.parametrize(
+    "regime,esperado",
+    [("remoto", 10), ("hibrido", 7), ("presencial", 6), ("indefinido", 4)],
+)
 def test_d2_por_regime(regime, esperado):
     vaga = pontuar(_analise(regime=regime, d2=0))
     assert vaga.analise.notas.d2_regime_localizacao.nota == esperado

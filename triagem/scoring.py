@@ -12,8 +12,14 @@ PESOS = {
     "d5_nivel_real": 0.10,
 }
 
-# Regra fixa do spec — sobrescreve a nota do modelo para garantir consistência
-D2_POR_REGIME = {"remoto": 10, "hibrido": 8, "presencial": 6}
+# Regra fixa do spec — sobrescreve a nota do modelo para garantir consistência.
+# `indefinido` vale menos que o pior caso conhecido: omissão de metadado pelo
+# anunciante é pior que uma condição ruim declarada, porque não dá para decidir.
+D2_POR_REGIME = {"remoto": 10, "hibrido": 7, "presencial": 6, "indefinido": 4}
+
+ALERTA_REGIME_INDEFINIDO = (
+    "Regime não declarado pela fonte — nota D2 reduzida por omissão, confirmar no anúncio."
+)
 
 # A regra acima olhava só o regime, e presencial no Vietnã valia os mesmos 6/10 que
 # presencial em Curitiba. Medido em 2026-07-27: a vaga da AvePoint em Da Nang virou a
@@ -106,6 +112,11 @@ def pontuar(
     notas = analise.notas
     nota_d2 = D2_POR_REGIME[analise.regime]
     motivo = "regra fixa do regime"
+    # O alerta é determinístico e não depende do modelo lembrar de escrevê-lo: a nota
+    # sozinha se dilui no score composto, e omissão de regime é o tipo de coisa que
+    # precisa aparecer na leitura rápida do relatório.
+    if analise.regime == "indefinido" and ALERTA_REGIME_INDEFINIDO not in analise.alertas:
+        analise.alertas.append(ALERTA_REGIME_INDEFINIDO)
     # Remoto não é afetado por distância — é o ponto de ser remoto.
     if analise.regime != "remoto" and _fora_do_raio(analise.localizacao):
         nota_d2 = (
