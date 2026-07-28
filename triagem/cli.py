@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 
-from . import cache, dedup, historico
+from . import alvos_ats, ats, cache, dedup, historico
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
 from .buscador import (
     _normalizar,
@@ -29,7 +29,7 @@ from .relatorio import render_relatorio
 from .schema import AnaliseVaga, VagaPontuada
 from .scoring import parse_pesos, pontuar
 
-SUBCOMANDOS = {"buscar", "analisar", "historico", "status", "cv", "limpar-cache"}
+SUBCOMANDOS = {"buscar", "analisar", "historico", "status", "cv", "limpar-cache", "sync-ats"}
 
 
 def _inteiro_positivo(valor: str) -> int:
@@ -92,6 +92,9 @@ def _montar_parser() -> argparse.ArgumentParser:
     lc.add_argument("--tudo", action="store_true",
                     help="Apaga todas as entradas e reseta os circuitos das fontes")
 
+    sa = sub.add_parser("sync-ats", help="Sincroniza ATS descobertos e fecha vagas removidas")
+    sa.add_argument("--paralelo", type=_inteiro_positivo, default=4, metavar="N")
+
     cv = sub.add_parser("cv", help="Gera bullets de CV + mensagem de candidatura para uma vaga")
     cv.add_argument("id", help="ID da vaga no histórico (ou prefixo único)")
     cv.add_argument("--modelo", choices=MODELOS, default=MODELO_PADRAO)
@@ -121,6 +124,7 @@ def main() -> int:
     load_dotenv()
     historico.aplicar_config_do_ambiente()
     cache.aplicar_config_do_ambiente()
+    alvos_ats.aplicar_config_do_ambiente()
 
     if args.comando == "buscar":
         return _cmd_buscar(args)
@@ -134,6 +138,8 @@ def main() -> int:
         return _cmd_cv(args)
     if args.comando == "limpar-cache":
         return _cmd_limpar_cache(args)
+    if args.comando == "sync-ats":
+        return _cmd_sync_ats(args)
     return 1
 
 
@@ -152,6 +158,49 @@ def _cmd_limpar_cache(args) -> int:
         return 1
     print(f"Cache limpo ({detalhe}): {removidas} entrada(s) removida(s).")
     print(f"Restam {len(estado['entradas'])} entrada(s) em {cache.ARQUIVO}.")
+    return 0
+
+
+def _cmd_sync_ats(args) -> int:
+    """Delta Sync: API oficial decide o que ainda está aberto."""
+    try:
+        estado = alvos_ats.carregar()
+        hist = historico.carregar()
+    except ValueError as e:
+        print(f"Erro: {e}")
+        return 1
+    alvos = alvos_ats.ativos(estado)
+    if not alvos:
+        print("Nenhum ATS ativo foi descoberto ainda. Rode 'triar buscar' para alimentar o radar.")
+        return 0
+
+    resultados = ats.sincronizar_alvos(alvos, args.paralelo)
+    fechadas = 0
+    inativos = 0
+    falhas = 0
+    for resultado in resultados:
+        alvos_ats.aplicar_resultado(estado, resultado)
+        if resultado.estado == "ativo":
+            fechadas += len(
+                historico.marcar_fechadas_por_ats(
+                    hist, resultado.provedor, resultado.token, set(resultado.job_ids)
+                )
+            )
+        elif resultado.estado == "inativo":
+            inativos += 1
+        else:
+            falhas += 1
+            print(f"  {resultado.provedor}:{resultado.token} — falha: {resultado.erro}")
+    try:
+        alvos_ats.salvar(estado)
+        historico.salvar(hist)
+    except OSError as e:
+        print(f"Erro ao gravar estado do Delta Sync: {e}")
+        return 1
+    print(
+        f"ATS sincronizados: {len(resultados)} | inativados: {inativos} | "
+        f"vagas fechadas: {fechadas} | falhas transitórias: {falhas}"
+    )
     return 0
 
 
@@ -249,9 +298,17 @@ def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> Anal
     local = (origem.get("localizacao") or "").strip()
     if local:
         mudancas["localizacao"] = local
-        # A fonte declarando remoto vence a inferência do modelo sobre o regime.
+        # A fonte estruturada é dona da modalidade. Cidade sem modalidade não
+        # autoriza o modelo a completar a lacuna como "remoto": o contrato do
+        # schema prevê "indefinido", que scoring.py penaliza deterministicamente.
         if _remoto_afirmado(_normalizar(local)):
             mudancas["regime"] = "remoto"
+        elif "hibrido" in _normalizar(local).split():
+            mudancas["regime"] = "hibrido"
+        elif "presencial" in _normalizar(local).split():
+            mudancas["regime"] = "presencial"
+        else:
+            mudancas["regime"] = "indefinido"
 
     return analise.model_copy(update=mudancas) if mudancas else analise
 

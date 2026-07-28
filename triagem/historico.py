@@ -18,7 +18,7 @@ ARQUIVO = Path(
     )
 )
 
-STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada"]
+STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
 
 PADRAO = Path(__file__).resolve().parent.parent / "historico.json"
 
@@ -134,3 +134,32 @@ def atualizar_status(hist: Dict[str, dict], prefixo: str, novo_status: str) -> s
     vid = buscar(hist, prefixo)
     hist[vid]["status"] = novo_status
     return vid
+
+
+def marcar_fechadas_por_ats(
+    hist: Dict[str, dict], provedor: str, token: str, ids_abertos: set[str]
+) -> list[str]:
+    """Fecha apenas vagas ainda novas que sumiram da API oficial do ATS.
+
+    Candidaturas em andamento preservam seu status manual, mas recebem a marca de
+    fechamento para que o histórico não apague o contexto da candidatura.
+    """
+    fechadas = []
+    agora = datetime.now().isoformat(timespec="seconds")
+    for ident, entrada in hist.items():
+        try:
+            origem = json.loads(entrada.get("texto") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(origem, dict):
+            continue
+        if origem.get("ats_provedor") != provedor or origem.get("ats_token") != token:
+            continue
+        job_id = str(origem.get("ats_job_id") or "")
+        if not job_id or job_id in ids_abertos:
+            continue
+        entrada["fechada_pelo_ats_em"] = agora
+        if entrada.get("status") == "novo":
+            entrada["status"] = "fechada"
+            fechadas.append(ident)
+    return fechadas

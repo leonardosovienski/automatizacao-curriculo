@@ -8,10 +8,12 @@ livre: resultados do Google Search Grounding e da metabusca DDGS.
 """
 
 import html
+import ipaddress
 import json
 import os
 import random
 import re
+import socket
 import threading
 import time
 import unicodedata
@@ -29,7 +31,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from . import ats, cache, replay
+from . import alvos_ats, ats, cache, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
@@ -932,6 +934,9 @@ class Inspecao:
     url_final: str = ""
     texto_pagina: str = ""
     anuncio: Anuncio = field(default_factory=Anuncio)
+    ats_provedor: str = ""
+    ats_token: str = ""
+    ats_job_id: str = ""
 
 
 # O User-Agent auto-declarado como bot levava 403 da Adzuna — a fonte com o melhor
@@ -974,7 +979,7 @@ def _robots(base: str) -> Optional[RobotFileParser]:
     """robots.txt do host, ou None quando não há (o que libera o acesso)."""
     try:
         resposta = httpx.get(
-            f"{base}/robots.txt", timeout=5, headers=CABECALHOS_NAVEGADOR, follow_redirects=True
+            f"{base}/robots.txt", timeout=5, headers=CABECALHOS_NAVEGADOR, follow_redirects=False
         )
     except Exception:  # noqa: BLE001 — robots indisponível não bloqueia a busca
         return None
@@ -987,7 +992,7 @@ def _robots(base: str) -> Optional[RobotFileParser]:
 
 def _permitido_por_robots(url: str) -> bool:
     partes = urlsplit(url or "")
-    if not partes.netloc:
+    if not partes.netloc or not _host_e_seguro(partes.hostname or ""):
         return False
     leitor = _robots(f"{partes.scheme}://{partes.netloc}")
     if leitor is None:
@@ -998,12 +1003,60 @@ def _permitido_por_robots(url: str) -> bool:
         return True
 
 
+@lru_cache(maxsize=512)
+def _host_e_seguro(host: str) -> bool:
+    """Aceita apenas hosts que resolvem exclusivamente para IPs globais.
+
+    Links de agregadores são dados não confiáveis. Bloquear loopback, redes privadas
+    e link-local evita que a validação de uma vaga alcance serviços locais ou
+    metadados de cloud. Todos os A/AAAA precisam ser globais para não escolher
+    arbitrariamente entre respostas DNS seguras e inseguras.
+    """
+    nome = (host or "").strip().strip("[]").lower()
+    if not nome or nome == "localhost":
+        return False
+    try:
+        return ipaddress.ip_address(nome).is_global
+    except ValueError:
+        pass
+    try:
+        respostas = socket.getaddrinfo(nome, None, type=socket.SOCK_STREAM)
+        enderecos = {resposta[4][0] for resposta in respostas}
+        return bool(enderecos) and all(ipaddress.ip_address(ip).is_global for ip in enderecos)
+    except (OSError, ValueError):
+        return False
+
+
+def _url_de_rede_segura(url: str) -> bool:
+    """Valida esquema, credenciais e destino antes de cada salto de rede."""
+    partes = urlsplit(url or "")
+    return (
+        partes.scheme in ("http", "https")
+        and not partes.username
+        and not partes.password
+        and _host_e_seguro(partes.hostname or "")
+    )
+
+
 def _obter(link: str):
-    """GET com cabeçalho de navegador, respeitando robots.txt e o freio por host."""
-    if not _permitido_por_robots(link):
-        raise PermissaoRobots(link)
-    _esperar_vez(urlsplit(link).netloc.lower())
-    return httpx.get(link, follow_redirects=True, timeout=15, headers=CABECALHOS_NAVEGADOR)
+    """GET seguro, com redirects manuais e revalidação de cada destino."""
+    destino = link
+    for _ in range(6):
+        if not _url_de_rede_segura(destino):
+            raise httpx.InvalidURL("destino de rede não permitido")
+        if not _permitido_por_robots(destino):
+            raise PermissaoRobots(destino)
+        _esperar_vez(urlsplit(destino).netloc.lower())
+        resposta = httpx.get(
+            destino, follow_redirects=False, timeout=15, headers=CABECALHOS_NAVEGADOR
+        )
+        if resposta.status_code not in (301, 302, 303, 307, 308):
+            return resposta
+        location = resposta.headers.get("location")
+        if not location:
+            return resposta
+        destino = urljoin(destino, location)
+    raise httpx.TooManyRedirects("muitos redirects ao validar vaga")
 
 
 def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
@@ -1057,13 +1110,25 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
     # pública, o dado vem da fonte do empregador em vez de ser lido da página. Falha
     # aqui não interrompe nada — `rotear` devolve None e a esteira segue no fluxo
     # legado (JSON-LD e, por último, o texto livre).
-    dados_ats = ats.rotear(link, bruto)
+    url_ats = url_final or link
+    alvo_ats = ats.descobrir_alvo(url_ats, bruto)
+    if alvo_ats:
+        alvos_ats.registrar(alvo_ats.provedor, alvo_ats.token)
+    dados_ats = ats.rotear(url_ats, bruto)
     if dados_ats:
         anuncio = _anuncio_de_contrato(dados_ats, urlsplit(url_final or link).netloc)
         if _expirado(anuncio.expira_em):
             replay.gravar("descarte_expirada", link, bruto, {"origem_dados": "API_GREENHOUSE"})
             return Inspecao(ativo=False, url_final=url_final)
-        return Inspecao(ativo=True, url_final=url_final, texto_pagina=bruto, anuncio=anuncio)
+        return Inspecao(
+            ativo=True,
+            url_final=url_final,
+            texto_pagina=bruto,
+            anuncio=anuncio,
+            ats_provedor=alvo_ats.provedor if alvo_ats else "",
+            ats_token=alvo_ats.token if alvo_ats else "",
+            ats_job_id=alvo_ats.job_id if alvo_ats else "",
+        )
 
     anuncio = _extrair_jobposting(bruto, urlsplit(url_final or link).netloc)
     # `validThrough` no passado encerra aqui: nem enriquecimento, nem LLM.
@@ -1176,6 +1241,14 @@ def _validar_links(
         if inspecao.url_final and not url_final:
             redirect_generico += 1
         atualizada = vaga.model_copy(update={"link_final": url_final})
+        if inspecao.ats_provedor:
+            atualizada = atualizada.model_copy(
+                update={
+                    "ats_provedor": inspecao.ats_provedor,
+                    "ats_token": inspecao.ats_token,
+                    "ats_job_id": inspecao.ats_job_id,
+                }
+            )
         antes = len(atualizada.descricao)
         atualizada = _aplicar_jobposting(atualizada, inspecao.anuncio)
         if not inspecao.anuncio.vazio():

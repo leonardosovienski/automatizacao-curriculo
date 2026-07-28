@@ -13,6 +13,7 @@ from triagem.analisador import (
     MODELO_PADRAO,
     MODELOS,
     TIMEOUT_ANALISE_MS,
+    _bloco_autoritativo,
     analisar_vaga,
     gerar_com_retentativa,
     system_prompt,
@@ -31,17 +32,19 @@ from triagem.buscador import (
     _e_router_de_redirect,
     _empresa_do_jsonld_confiavel,
     _enriquecer_descricao,
-    _resolver_router,
     _fonte_estruturada,
     _host_de_anuncio,
+    _host_e_seguro,
     _inspecionar_link,
     _limpar_url,
     _local_declarado_incompativel,
     _localizacao_compativel,
     _normalizar,
     _normalizar_com_indices,
+    _obter,
     _pontuacao_preliminar,
     _redigir_segredos,
+    _resolver_router,
     _resumo_erro,
     _selecionar_candidatas,
     _texto_livre_com_cache,
@@ -56,13 +59,12 @@ from triagem.entrada import carregar_vagas
 from triagem.exportar import exportar
 from triagem.relatorio import render_relatorio
 from triagem.schema import AnaliseVaga, Dimensao, Notas, VagaEncontrada
-from triagem.analisador import _bloco_autoritativo
 from triagem.scoring import (
     ALERTA_REGIME_INDEFINIDO,
-    PESOS,
     D2_HIBRIDO_FORA_DO_RAIO,
     D2_POR_REGIME,
     D2_PRESENCIAL_FORA_DO_RAIO,
+    PESOS,
     parse_pesos,
     pontuar,
 )
@@ -457,6 +459,20 @@ def test_campos_autoritativos_nao_inventam_quando_a_origem_esta_vazia():
     assert imposta.regime == "hibrido"
 
 
+def test_campos_autoritativos_impoem_indefinido_quando_so_a_cidade_e_declarada():
+    origem = json.dumps(
+        {"empresa": "Empresa Estruturada", "confianca_empresa": "alta", "localizacao": "Curitiba, PR"}
+    )
+    imposta = _impor_campos_autoritativos(_analise(regime="remoto"), origem)
+    assert imposta.regime == "indefinido"
+
+
+def test_campos_autoritativos_preservam_modalidade_declarada_pela_fonte():
+    origem = json.dumps({"localizacao": "Híbrido em Curitiba, PR"})
+    imposta = _impor_campos_autoritativos(_analise(regime="remoto"), origem)
+    assert imposta.regime == "hibrido"
+
+
 def test_campos_autoritativos_ignoram_empresa_de_baixa_confianca():
     origem = json.dumps(
         {"empresa": "Nerdin Vagas de TI", "confianca_empresa": "baixa", "localizacao": ""}
@@ -496,7 +512,7 @@ def test_prompt_descreve_as_dimensoes_que_o_schema_realmente_tem():
     }
     for dimensao, termo in esperado.items():
         linha = next(
-            (l for l in prompt.splitlines() if l.strip().startswith(f"**{dimensao} —")), None
+            (linha for linha in prompt.splitlines() if linha.strip().startswith(f"**{dimensao} —")), None
         )
         assert linha is not None, f"prompt não descreve {dimensao}"
         assert termo in linha, f"{dimensao} deveria ser sobre {termo!r}, veio: {linha!r}"
@@ -1623,6 +1639,53 @@ def test_schema_rejeita_nota_fora_do_intervalo():
         _dim(11)
 
 
+def test_schema_estrito_rejeita_coercao_e_campos_extras():
+    with pytest.raises(ValidationError):
+        Dimensao(nota="9", justificativa="ok")
+    with pytest.raises(ValidationError):
+        Notas(**{**_analise().notas.model_dump(), "inventada": {"nota": 10, "justificativa": "x"}})
+
+
+def test_host_de_rede_rejeita_enderecos_nao_globais(monkeypatch):
+    _host_e_seguro.cache_clear()
+    monkeypatch.setattr("triagem.buscador.socket.getaddrinfo", lambda *args, **kwargs: [
+        (None, None, None, None, ("127.0.0.1", 0)),
+    ])
+    assert not _host_e_seguro("agregador.teste")
+
+
+def test_host_de_rede_aceita_apenas_resolucoes_totalmente_globais(monkeypatch):
+    _host_e_seguro.cache_clear()
+    monkeypatch.setattr("triagem.buscador.socket.getaddrinfo", lambda *args, **kwargs: [
+        (None, None, None, None, ("8.8.8.8", 0)),
+        (None, None, None, None, ("1.1.1.1", 0)),
+    ])
+    assert _host_e_seguro("agregador.teste")
+
+
+def test_redirect_para_rede_privada_e_bloqueado_antes_da_segunda_requisicao(monkeypatch):
+    chamadas = []
+
+    class Resposta:
+        status_code = 302
+        headers = {"location": "http://127.0.0.1/admin"}
+
+    monkeypatch.setattr(
+        "triagem.buscador._url_de_rede_segura", lambda url: "127.0.0.1" not in url
+    )
+    monkeypatch.setattr("triagem.buscador._permitido_por_robots", lambda url: True)
+    monkeypatch.setattr("triagem.buscador._esperar_vez", lambda host: None)
+
+    def redireciona(url, **kwargs):
+        chamadas.append((url, kwargs["follow_redirects"]))
+        return Resposta()
+
+    monkeypatch.setattr("triagem.buscador.httpx.get", redireciona)
+    with pytest.raises(httpx.InvalidURL):
+        _obter("https://agregador.teste/vaga/123")
+    assert chamadas == [("https://agregador.teste/vaga/123", False)]
+
+
 def test_schema_exige_notas_em_vaga_aprovada():
     dados = _analise().model_dump()
     dados["notas"] = None
@@ -1676,6 +1739,20 @@ def test_historico_registrar_e_preservar_status(tmp_path, monkeypatch):
 
     historico.salvar(hist)
     assert historico.carregar()[vaga.id]["score_final"] == 93.5
+
+
+def test_delta_sync_fecha_apenas_vaga_nova_removida_do_ats():
+    origem = json.dumps(
+        {"ats_provedor": "greenhouse", "ats_token": "acme", "ats_job_id": "10"}
+    )
+    aplicada = json.dumps(
+        {"ats_provedor": "greenhouse", "ats_token": "acme", "ats_job_id": "20"}
+    )
+    hist = {"nova": {"status": "novo", "texto": origem}, "aplicada": {"status": "aplicado", "texto": aplicada}}
+    assert historico.marcar_fechadas_por_ats(hist, "greenhouse", "acme", {"30"}) == ["nova"]
+    assert hist["nova"]["status"] == "fechada"
+    assert "fechada_pelo_ats_em" in hist["aplicada"]
+    assert hist["aplicada"]["status"] == "aplicado"
 
 
 def test_historico_buscar_prefixo_ambiguo_ou_inexistente(tmp_path, monkeypatch):

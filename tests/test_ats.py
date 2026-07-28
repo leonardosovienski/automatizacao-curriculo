@@ -8,7 +8,7 @@ triagem como "Remoto" alucinado e virou a recomendação #1 com 78/100.
 import httpx
 import pytest
 
-from triagem.ats import GreenhouseAdapter, _texto_limpo, rotear
+from triagem.ats import GreenhouseAdapter, _texto_limpo, descobrir_alvo, rotear, sincronizar_alvos
 
 # Recorte fiel do payload real de boards-api.greenhouse.io.
 VAGA_REAL = {
@@ -229,6 +229,25 @@ def test_rotear_engole_adapter_quebrado(monkeypatch):
 
     monkeypatch.setattr("triagem.ats.ADAPTADORES", (_Explode,))
     assert rotear("https://qualquer.com/vagas/1", "") is None
+
+
+def test_radar_descobre_token_e_id_sem_chamar_a_api():
+    alvo = descobrir_alvo(
+        "https://www.avepoint.com/careers/job-detail?gh_jid=5594102", HTML_COM_EMBED
+    )
+    assert (alvo.provedor, alvo.token, alvo.job_id) == ("greenhouse", "avepoint", "5594102")
+
+
+def test_delta_sync_lista_ids_e_tombstone_so_respostas_terminais(monkeypatch):
+    _responder(monkeypatch, {"/boards/ativo/jobs": (200, {"jobs": [{"id": 10}, {"id": 20}]})})
+    resultado = sincronizar_alvos([{"provedor": "greenhouse", "token": "ativo"}])[0]
+    assert resultado.estado == "ativo" and resultado.job_ids == frozenset({"10", "20"})
+
+    _responder(monkeypatch, {"/boards/morto/jobs": (404, {})})
+    assert sincronizar_alvos([{"provedor": "greenhouse", "token": "morto"}])[0].estado == "inativo"
+
+    _responder(monkeypatch, {"/boards/instavel/jobs": (500, {})})
+    assert sincronizar_alvos([{"provedor": "greenhouse", "token": "instavel"}])[0].estado == "falha"
 
 
 def test_texto_limpo_lida_com_vazio_e_none():

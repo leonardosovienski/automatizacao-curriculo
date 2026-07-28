@@ -6,13 +6,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Dimensao(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(strict=True, extra="forbid", str_strip_whitespace=True)
 
     nota: int = Field(ge=0, le=10)
     justificativa: str = Field(min_length=1)
 
 
 class Notas(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     d1_crescimento: Dimensao
     d2_regime_localizacao: Dimensao
     d3_stack_fit: Dimensao
@@ -22,6 +24,8 @@ class Notas(BaseModel):
 
 class AnaliseVaga(BaseModel):
     """Resposta estruturada do modelo para uma vaga."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     titulo_normalizado: str
     empresa: str
@@ -98,6 +102,10 @@ class VagaEncontrada(BaseModel):
     confianca_empresa: Literal["alta", "media", "baixa"] = "alta"
     # Descrição completa obtida da página do anúncio (Adzuna/Jooble truncam).
     descricao_completa: bool = False
+    # Proveniência do ATS descoberta sem LLM; permite Delta Sync no histórico.
+    ats_provedor: str = ""
+    ats_token: str = ""
+    ats_job_id: str = ""
 
     def chave_dedup(self) -> str:
         return self.link_final or self.link
