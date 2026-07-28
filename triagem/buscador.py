@@ -8,10 +8,12 @@ livre: resultados do Google Search Grounding e da metabusca DDGS.
 """
 
 import html
+import ipaddress
 import json
 import os
 import random
 import re
+import socket
 import threading
 import time
 import unicodedata
@@ -974,7 +976,7 @@ def _robots(base: str) -> Optional[RobotFileParser]:
     """robots.txt do host, ou None quando não há (o que libera o acesso)."""
     try:
         resposta = httpx.get(
-            f"{base}/robots.txt", timeout=5, headers=CABECALHOS_NAVEGADOR, follow_redirects=True
+            f"{base}/robots.txt", timeout=5, headers=CABECALHOS_NAVEGADOR, follow_redirects=False
         )
     except Exception:  # noqa: BLE001 — robots indisponível não bloqueia a busca
         return None
@@ -987,7 +989,7 @@ def _robots(base: str) -> Optional[RobotFileParser]:
 
 def _permitido_por_robots(url: str) -> bool:
     partes = urlsplit(url or "")
-    if not partes.netloc:
+    if not partes.netloc or not _host_e_seguro(partes.hostname or ""):
         return False
     leitor = _robots(f"{partes.scheme}://{partes.netloc}")
     if leitor is None:
@@ -998,12 +1000,60 @@ def _permitido_por_robots(url: str) -> bool:
         return True
 
 
+@lru_cache(maxsize=512)
+def _host_e_seguro(host: str) -> bool:
+    """Aceita apenas hosts que resolvem exclusivamente para IPs globais.
+
+    Links de agregadores são dados não confiáveis. Bloquear loopback, redes privadas
+    e link-local evita que a validação de uma vaga alcance serviços locais ou
+    metadados de cloud. Todos os A/AAAA precisam ser globais para não escolher
+    arbitrariamente entre respostas DNS seguras e inseguras.
+    """
+    nome = (host or "").strip().strip("[]").lower()
+    if not nome or nome == "localhost":
+        return False
+    try:
+        return ipaddress.ip_address(nome).is_global
+    except ValueError:
+        pass
+    try:
+        respostas = socket.getaddrinfo(nome, None, type=socket.SOCK_STREAM)
+        enderecos = {resposta[4][0] for resposta in respostas}
+        return bool(enderecos) and all(ipaddress.ip_address(ip).is_global for ip in enderecos)
+    except (OSError, ValueError):
+        return False
+
+
+def _url_de_rede_segura(url: str) -> bool:
+    """Valida esquema, credenciais e destino antes de cada salto de rede."""
+    partes = urlsplit(url or "")
+    return (
+        partes.scheme in ("http", "https")
+        and not partes.username
+        and not partes.password
+        and _host_e_seguro(partes.hostname or "")
+    )
+
+
 def _obter(link: str):
-    """GET com cabeçalho de navegador, respeitando robots.txt e o freio por host."""
-    if not _permitido_por_robots(link):
-        raise PermissaoRobots(link)
-    _esperar_vez(urlsplit(link).netloc.lower())
-    return httpx.get(link, follow_redirects=True, timeout=15, headers=CABECALHOS_NAVEGADOR)
+    """GET seguro, com redirects manuais e revalidação de cada destino."""
+    destino = link
+    for _ in range(6):
+        if not _url_de_rede_segura(destino):
+            raise httpx.InvalidURL("destino de rede não permitido")
+        if not _permitido_por_robots(destino):
+            raise PermissaoRobots(destino)
+        _esperar_vez(urlsplit(destino).netloc.lower())
+        resposta = httpx.get(
+            destino, follow_redirects=False, timeout=15, headers=CABECALHOS_NAVEGADOR
+        )
+        if resposta.status_code not in (301, 302, 303, 307, 308):
+            return resposta
+        location = resposta.headers.get("location")
+        if not location:
+            return resposta
+        destino = urljoin(destino, location)
+    raise httpx.TooManyRedirects("muitos redirects ao validar vaga")
 
 
 def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:

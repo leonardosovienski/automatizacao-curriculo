@@ -6,13 +6,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Dimensao(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(strict=True, extra="forbid", str_strip_whitespace=True)
 
     nota: int = Field(ge=0, le=10)
     justificativa: str = Field(min_length=1)
 
 
 class Notas(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     d1_crescimento: Dimensao
     d2_regime_localizacao: Dimensao
     d3_stack_fit: Dimensao
@@ -22,6 +24,8 @@ class Notas(BaseModel):
 
 class AnaliseVaga(BaseModel):
     """Resposta estruturada do modelo para uma vaga."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     titulo_normalizado: str
     empresa: str

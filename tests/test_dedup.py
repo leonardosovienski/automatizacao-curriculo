@@ -12,15 +12,14 @@ from triagem.dedup import (
     LIMIAR_JACCARD,
     Registro,
     agrupar,
-    resolver_id,
     chave_estrutural,
     corroborado,
     empresa_canonica,
     jaccard,
     nucleo_do_cargo,
     pode_fundir_semanticamente,
+    resolver_id,
 )
-
 
 # ---------------------------------------------------------------- normalização
 

@@ -249,9 +249,17 @@ def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> Anal
     local = (origem.get("localizacao") or "").strip()
     if local:
         mudancas["localizacao"] = local
-        # A fonte declarando remoto vence a inferência do modelo sobre o regime.
+        # A fonte estruturada é dona da modalidade. Cidade sem modalidade não
+        # autoriza o modelo a completar a lacuna como "remoto": o contrato do
+        # schema prevê "indefinido", que scoring.py penaliza deterministicamente.
         if _remoto_afirmado(_normalizar(local)):
             mudancas["regime"] = "remoto"
+        elif "hibrido" in _normalizar(local).split():
+            mudancas["regime"] = "hibrido"
+        elif "presencial" in _normalizar(local).split():
+            mudancas["regime"] = "presencial"
+        else:
+            mudancas["regime"] = "indefinido"
 
     return analise.model_copy(update=mudancas) if mudancas else analise
 
