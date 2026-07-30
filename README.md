@@ -53,8 +53,11 @@ cascata de dedup A/B/C ──▶ Gemini (notas D1-D5 + alertas)
   (`remoto=10 · híbrido CWB=7 · presencial CWB=6 · indefinido=4`), com punição extra quando
   a praça está fora do raio de deslocamento (presencial=1, híbrido=2). O score composto é
   `D1*0.30 + D2*0.25 + D3*0.20 + D4*0.15 + D5*0.10` em 0–100.
-- As regras de triagem estão em [prompts/system_prompt.md](prompts/system_prompt.md) e as
-  do gerador de CV em [prompts/cv_prompt.md](prompts/cv_prompt.md) — edite sem tocar no código.
+- As regras de triagem estão em
+  [triagem/prompts/system_prompt.md](triagem/prompts/system_prompt.md) e as do gerador de
+  CV em [triagem/prompts/cv_prompt.md](triagem/prompts/cv_prompt.md) — edite sem tocar no
+  código. Os arquivos fazem parte do pacote instalado, portanto o wheel funciona fora do
+  checkout.
 
 ### Ética de coleta
 
@@ -81,6 +84,7 @@ Variáveis de ambiente (todas ficam só no `.env`, que é gitignorado):
 | `JOOBLE_API_KEY` | não | fonte estruturada de vagas em `triar buscar` |
 | `ADZUNA_APP_ID` + `ADZUNA_API_KEY` | não | fonte estruturada de vagas (as duas juntas) |
 | `TRIAGEM_HISTORICO` | não | caminho alternativo do `historico.json` |
+| `TRIAGEM_CV_BASE` | não | caminho alternativo do `perfil/cv_base.md` |
 
 Como alternativa, instale o comando `triar` diretamente:
 
@@ -280,7 +284,7 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São 275 testes sem chamadas reais à API, com cobertura de branches mínima de 68% no CI.
+São 290 testes sem chamadas reais à API, com cobertura de branches mínima de 75% no CI.
 Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
@@ -315,8 +319,8 @@ outro que a nota do `indefinido` citada no prompt bata com `D2_POR_REGIME`.
 | `triagem/curriculo.py` | Gerador de CV sob medida + mensagem de candidatura |
 | `triagem/cache.py` | Cache com TTL por fonte + circuit breaker do Google Search |
 | `triagem/schema.py` | Modelos Pydantic (contrato do JSON) |
-| `prompts/system_prompt.md` | Perfil do candidato + regras de triagem |
-| `prompts/cv_prompt.md` | Regras do gerador de material de candidatura |
+| `triagem/prompts/system_prompt.md` | Perfil do candidato + regras de triagem |
+| `triagem/prompts/cv_prompt.md` | Regras do gerador de material de candidatura |
 | `perfil/cv_base.md` | CV base real (fonte de verdade do gerador; gitignorado — dados pessoais) |
 | `perfil/cv_base.exemplo.md` | Template versionável do CV base |
 | `tests/test_pipeline.py` | Testes do pipeline sem API |

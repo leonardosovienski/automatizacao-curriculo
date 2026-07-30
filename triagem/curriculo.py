@@ -1,6 +1,7 @@
 """Gera material de candidatura sob medida usando o Google Gemini."""
 
 import json
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -18,7 +19,14 @@ from .analisador import (
     texto_da_resposta,
 )
 
-CV_BASE = Path(__file__).resolve().parent.parent / "perfil" / "cv_base.md"
+CV_BASE = Path(os.environ.get("TRIAGEM_CV_BASE") or Path.cwd() / "perfil" / "cv_base.md")
+
+
+def aplicar_config_do_ambiente() -> None:
+    """Re-resolve o CV depois que o CLI carrega variáveis do arquivo `.env`."""
+    global CV_BASE
+    CV_BASE = Path(os.environ.get("TRIAGEM_CV_BASE") or Path.cwd() / "perfil" / "cv_base.md")
+
 
 # Blocos marcados assim nunca saem da máquina: são removidos antes de qualquer
 # chamada de API. Transforma o aviso de privacidade do README em salvaguarda real.

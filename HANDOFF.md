@@ -12,7 +12,7 @@
 - Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
   transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
 - O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
-- CI executa Ruff, compileall e 275 testes com cobertura de branches mínima de 68%.
+- CI executa Ruff, compileall e 290 testes com cobertura de branches mínima de 75%.
 
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de
 material de CV. Também busca vagas atuais na web a partir de um pedido em linguagem

@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
-from . import alvos_ats, ats, cache, dedup, historico
+from . import alvos_ats, ats, cache, curriculo, dedup, historico, replay
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
 from .buscador import (
     _limpar_url,
@@ -127,6 +127,8 @@ def main() -> int:
     historico.aplicar_config_do_ambiente()
     cache.aplicar_config_do_ambiente()
     alvos_ats.aplicar_config_do_ambiente()
+    replay.aplicar_config_do_ambiente()
+    curriculo.aplicar_config_do_ambiente()
 
     # Serializa comandos do CLI. Sem lock, duas execuções fazem read-modify-write
     # sobre JSONs diferentes e a última apaga o estado gravado pela primeira.

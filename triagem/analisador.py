@@ -29,7 +29,7 @@ MODELOS = {
 }
 MODELO_PADRAO = "lite"
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 # Schemas e prompts não mudam durante a execução: gerar/ler a cada vaga é I/O e
 # CPU puro desperdício, e pesa mais ainda com --paralelo.

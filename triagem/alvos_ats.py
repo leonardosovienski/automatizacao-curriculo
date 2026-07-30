@@ -7,7 +7,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-PADRAO = Path(__file__).resolve().parent.parent / "alvos_ats.json"
+PADRAO = Path.cwd() / "alvos_ats.json"
 ARQUIVO = Path(os.environ.get("TRIAGEM_ALVOS_ATS") or PADRAO)
 _TRAVA = threading.RLock()
 

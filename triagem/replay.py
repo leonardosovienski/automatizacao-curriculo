@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-PADRAO = Path(__file__).resolve().parent.parent / ".replay"
+PADRAO = Path.cwd() / ".replay"
 DIRETORIO = Path(os.environ.get("TRIAGEM_REPLAY") or PADRAO)
 
 # Teto por payload. Acima disto o material é truncado: o começo da página já basta

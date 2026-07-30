@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-PADRAO = Path(__file__).resolve().parent.parent / ".cache_busca.json"
+PADRAO = Path.cwd() / ".cache_busca.json"
 ARQUIVO = Path(os.environ.get("TRIAGEM_CACHE") or PADRAO)
 
 # Vagas novas aparecem ao longo do dia; 6 h mantém o resultado utilizável sem

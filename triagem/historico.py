@@ -11,18 +11,11 @@ from typing import Dict
 
 from .schema import VagaPontuada
 
-ARQUIVO = Path(
-    os.environ.get(
-        "TRIAGEM_HISTORICO",
-        Path(__file__).resolve().parent.parent / "historico.json",
-    )
-)
+PADRAO = Path.cwd() / "historico.json"
+ARQUIVO = Path(os.environ.get("TRIAGEM_HISTORICO") or PADRAO)
 
 STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
 PIPELINE_VERSION = 2
-
-PADRAO = Path(__file__).resolve().parent.parent / "historico.json"
-
 
 def aplicar_config_do_ambiente() -> None:
     """Re-resolve o caminho do histórico depois que o .env foi carregado.
