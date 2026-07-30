@@ -284,7 +284,7 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São 290 testes sem chamadas reais à API, com cobertura de branches mínima de 75% no CI.
+São 292 testes sem chamadas reais à API, com cobertura de branches mínima de 75% no CI.
 Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade

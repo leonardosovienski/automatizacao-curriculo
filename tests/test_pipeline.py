@@ -57,7 +57,12 @@ from triagem.buscador import (
     buscar_vagas,
 )
 from triagem.cli import _impor_campos_autoritativos, _inteiro_positivo, _montar_parser
-from triagem.curriculo import carregar_cv_base, gerar_material, remover_blocos_privados
+from triagem.curriculo import (
+    SCHEMA_MATERIAL,
+    carregar_cv_base,
+    gerar_material,
+    remover_blocos_privados,
+)
 from triagem.entrada import carregar_vagas
 from triagem.exportar import exportar
 from triagem.relatorio import render_relatorio
@@ -146,9 +151,11 @@ class _ModelosFake:
     def __init__(self, resposta):
         self.respostas = resposta if isinstance(resposta, list) else [resposta]
         self.chamada = None
+        self.chamadas = []
 
     def generate_content(self, **kwargs):
         self.chamada = kwargs
+        self.chamadas.append(kwargs)
         return self.respostas.pop(0)
 
 
@@ -1030,9 +1037,40 @@ def test_chamadas_de_api_tem_timeout_explicito():
 
 
 def test_material_cv_rejeita_evidencia_inventada():
-    client = _ClienteFake(_resposta_gemini(_material_json("certificação inexistente")))
-    with pytest.raises(ValueError, match="sem evidência literal"):
+    invalida = _resposta_gemini(_material_json("certificação inexistente"))
+    client = _ClienteFake([invalida, invalida])
+    with pytest.raises(ValueError, match="após 2 tentativas"):
         gerar_material(client, "meu cv real", "vaga", _analise().model_dump())
+    assert len(client.models.chamadas) == 2
+
+
+def test_material_cv_corrige_evidencia_invalida_na_segunda_geracao():
+    client = _ClienteFake(
+        [
+            _resposta_gemini(_material_json("meu cv; certificação inexistente")),
+            _resposta_gemini(_material_json("meu cv")),
+        ]
+    )
+    material = gerar_material(client, "meu cv", "vaga", _analise().model_dump())
+    assert "Mensagem profissional." in material
+    assert len(client.models.chamadas) == 2
+    assert "resposta anterior foi rejeitada" in client.models.chamadas[1]["contents"]
+
+
+def test_pedido_do_material_lista_apenas_evidencias_utilizaveis_do_cv():
+    client = _ClienteFake(_resposta_gemini(_material_json("Experiência real")))
+    gerar_material(
+        client,
+        "# CV\n\nExperiência real\n\n[PREENCHA telefone]",
+        "vaga",
+        _analise().model_dump(),
+    )
+    conteudo = client.models.chamada["contents"]
+    assert '"Experiência real"' in conteudo
+    assert '"# CV"' not in conteudo
+    assert "[PREENCHA telefone]" not in conteudo.split("<EVIDENCIAS_PERMITIDAS_JSON>")[1]
+    assert client.models.chamada["config"].response_json_schema == SCHEMA_MATERIAL
+    assert client.models.chamada["config"].temperature == 0
 
 
 def test_prompts_sao_lidos_do_disco_uma_vez_so():
