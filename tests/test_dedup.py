@@ -66,9 +66,9 @@ def test_camada_a_funde_url_identica():
 def test_camada_b_funde_mesma_vaga_em_portais_diferentes():
     # RedFox via Adzuna (JSON-LD, alta) e via um portal hipotético com outro título.
     a = Registro("1", "https://adzuna.com.br/details/1", "RedFox Digital Solutions",
-                 "DevOps Júnior", confianca="alta")
+                 "DevOps Júnior", confianca="alta", localidade="Curitiba")
     b = Registro("2", "https://gupy.io/v/2", "RedFox Digital Solutions Ltda",
-                 "Júnior DevOps", confianca="media")
+                 "Júnior DevOps", confianca="media", localidade="curitiba")
     assert len(agrupar([a, b])) == 1
 
 
@@ -97,10 +97,12 @@ def test_camada_c_funde_o_caso_real_da_people_partners():
         "a1712e844f",
         "https://br.linkedin.com/jobs/view/devsecops-junior-at-people-partners-4416146595",
         "People Partners Consult", "DevSecOps Júnior", confianca="media",
+        localidade="Híbrido",
     )
     adzuna = Registro(
         "0d86cbc4bc", "https://www.adzuna.com.br/details/5754860617",
         "People Partners Consult", "DevSecOps Júnior", confianca="media",
+        localidade="híbrido",
     )
     assert len(agrupar([linkedin, adzuna])) == 1
 
@@ -127,8 +129,14 @@ def test_portao_da_camada_c_aceita_um_lado_estruturado():
 # ---------------------------------------------------------------- agrupamento
 
 def test_agrupar_preserva_todas_as_origens_sem_descartar():
-    a = Registro("1", "https://br.linkedin.com/jobs/view/x-4416146595", "Alfa", "DevOps Júnior")
-    b = Registro("2", "https://www.adzuna.com.br/details/99", "Alfa", "DevOps Júnior")
+    a = Registro(
+        "1", "https://br.linkedin.com/jobs/view/x-4416146595",
+        "Alfa", "DevOps Júnior", localidade="Curitiba",
+    )
+    b = Registro(
+        "2", "https://www.adzuna.com.br/details/99",
+        "Alfa", "DevOps Júnior", localidade="curitiba",
+    )
     grupos = agrupar([a, b])
     assert len(grupos) == 1
     assert [r.id for r in grupos[0]] == ["1", "2"]
@@ -186,6 +194,7 @@ def test_resolver_id_encontra_a_mesma_vaga_gravada_por_outra_fonte():
     nova = Registro(
         "0d86cbc4bc", "https://www.adzuna.com.br/details/5754860617",
         "People Partners Consult", "DevSecOps Júnior", confianca="media",
+        localidade="Híbrido",
     )
     assert resolver_id(historico, nova) == "a1712e844f"
 
@@ -239,3 +248,21 @@ def test_agrupar_mantem_vagas_distintas_separadas():
         Registro("3", "https://c.com.br/vagas/3", "Alfa", "Desenvolvedor C# Júnior", confianca="alta"),
     ]
     assert len(agrupar(registros)) == 3
+
+
+def test_ids_ats_distintos_nunca_sao_fundidos():
+    a = Registro(
+        "1", "https://empresa.test/jobs/1", "Alfa", "DevOps Júnior",
+        localidade="Curitiba", ats_provedor="greenhouse", ats_token="alfa", ats_job_id="1",
+    )
+    b = Registro(
+        "2", "https://empresa.test/jobs/2", "Alfa", "DevOps Júnior",
+        localidade="Curitiba", ats_provedor="greenhouse", ats_token="alfa", ats_job_id="2",
+    )
+    assert len(agrupar([a, b])) == 2
+
+
+def test_empresa_e_titulo_sem_corroboracao_nao_apagam_requisicao_distinta():
+    a = Registro("1", "https://a.test/jobs/1", "Alfa", "DevOps Júnior", confianca="alta")
+    b = Registro("2", "https://a.test/jobs/2", "Alfa", "DevOps Júnior", confianca="alta")
+    assert len(agrupar([a, b])) == 2

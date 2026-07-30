@@ -26,6 +26,7 @@ Camadas, da mais determinística para a mais tolerante:
 
 import re
 import unicodedata
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 # Sufixos societários e ruído que variam de portal para portal para a mesma empresa.
@@ -151,7 +152,10 @@ def pode_fundir_semanticamente(
 class Registro:
     """O mínimo que a cascata precisa saber sobre uma vaga, venha de onde vier."""
 
-    __slots__ = ("id", "url", "empresa", "titulo", "confianca", "idade_dias", "localidade")
+    __slots__ = (
+        "id", "url", "empresa", "titulo", "confianca", "idade_dias", "localidade",
+        "ats_provedor", "ats_token", "ats_job_id",
+    )
 
     def __init__(
         self,
@@ -162,6 +166,9 @@ class Registro:
         confianca: str = "media",
         idade_dias: Optional[int] = None,
         localidade: str = "",
+        ats_provedor: str = "",
+        ats_token: str = "",
+        ats_job_id: str = "",
     ):
         self.id = ident
         self.url = url
@@ -170,6 +177,25 @@ class Registro:
         self.confianca = confianca
         self.idade_dias = idade_dias
         self.localidade = localidade
+        self.ats_provedor = ats_provedor
+        self.ats_token = ats_token
+        self.ats_job_id = ats_job_id
+
+
+def idade_da_publicacao(publicada_em: str) -> Optional[int]:
+    bruto = str(publicada_em or "").strip().replace("Z", "+00:00")
+    if not bruto:
+        return None
+    try:
+        momento = datetime.fromisoformat(bruto)
+    except ValueError:
+        try:
+            momento = datetime.fromisoformat(bruto[:10])
+        except ValueError:
+            return None
+    if momento.tzinfo is None:
+        momento = momento.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - momento).days)
 
 
 def _mesma_vaga(a: Registro, b: Registro) -> Optional[str]:
@@ -177,16 +203,16 @@ def _mesma_vaga(a: Registro, b: Registro) -> Optional[str]:
     if a.url and b.url and chave_exata(a.url) == chave_exata(b.url):
         return "A"
 
+    identidade_a = (a.ats_provedor, a.ats_token, a.ats_job_id)
+    identidade_b = (b.ats_provedor, b.ats_token, b.ats_job_id)
+    if all(identidade_a) and all(identidade_b):
+        return "ATS" if identidade_a == identidade_b else None
+
     chave_a = chave_estrutural(a.empresa, a.titulo)
     chave_b = chave_estrutural(b.empresa, b.titulo)
     if chave_a and chave_b and chave_a == chave_b:
-        # Chave estrutural idêntica: mesma empresa canônica E mesmo núcleo de cargo.
-        if "alta" in (a.confianca, b.confianca):
-            return "B"
-        # Sem lado estruturado, a corroboração é o que autoriza a fusão. Ela entra
-        # aqui, e não afrouxando o limiar da Camada C: baixar o Jaccard abriria a
-        # porta para `Data Engineer` × `Data Analyst` na mesma empresa e mesma data,
-        # que é falso merge — o erro que apaga uma vaga boa em silêncio.
+        # Empresa+título não identificam uma requisição. Mesmo com confiança alta,
+        # exija data/local compatível para não apagar duas aberturas distintas.
         if corroborado(a.idade_dias, b.idade_dias, a.localidade, b.localidade):
             return "B"
 
@@ -194,7 +220,10 @@ def _mesma_vaga(a: Registro, b: Registro) -> Optional[str]:
         return None
     if empresa_canonica(a.empresa) != empresa_canonica(b.empresa):
         return None
-    if jaccard(nucleo_do_cargo(a.titulo), nucleo_do_cargo(b.titulo)) >= LIMIAR_JACCARD:
+    if (
+        jaccard(nucleo_do_cargo(a.titulo), nucleo_do_cargo(b.titulo)) >= LIMIAR_JACCARD
+        and corroborado(a.idade_dias, b.idade_dias, a.localidade, b.localidade)
+    ):
         return "C"
     return None
 
@@ -219,7 +248,11 @@ def registro_de_historico(ident: str, entrada: dict) -> Optional[Registro]:
         empresa=origem.get("empresa") or "",
         titulo=origem.get("titulo") or "",
         confianca=origem.get("confianca_empresa") or "media",
+        idade_dias=idade_da_publicacao(origem.get("publicada_em") or ""),
         localidade=origem.get("localizacao") or "",
+        ats_provedor=origem.get("ats_provedor") or "",
+        ats_token=origem.get("ats_token") or "",
+        ats_job_id=origem.get("ats_job_id") or "",
     )
 
 

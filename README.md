@@ -91,8 +91,10 @@ triar --help
 
 O gerador de CV usa `perfil/cv_base.md` como fonte de verdade — o arquivo contém dados
 pessoais e fica fora do versionamento (`.gitignore`); o formato esperado está em
-[perfil/cv_base.exemplo.md](perfil/cv_base.exemplo.md). O gerador nunca inventa nada que
-não esteja no CV base.
+[perfil/cv_base.exemplo.md](perfil/cv_base.exemplo.md). A saída do gerador é estruturada:
+cada argumento e bullet precisa trazer um trecho literal de evidência do CV base. O programa
+valida essas evidências antes de renderizar o Markdown e rejeita a resposta inteira quando
+uma afirmação não tem respaldo.
 
 > **Privacidade:** na camada gratuita do Gemini, o conteúdo enviado pode ser usado pelo
 > Google para melhorar seus produtos. O comando `cv` envia o CV base e o texto da vaga, e
@@ -140,7 +142,9 @@ as execuções seguintes pulam a fonte em vez de gastar latência para receber o
 
 O estado do circuito é gravado em disco, então ele conta falhas **entre** execuções — que é
 o que importa num programa que termina a cada uso. O cache se poda sozinho: entradas com
-mais de 30 dias saem do arquivo no carregamento.
+mais de 30 dias saem do arquivo no carregamento. A chave do cache tem versão de contrato;
+mudanças incompatíveis invalidam automaticamente entradas antigas. JSON sintaticamente
+válido com shape incorreto também é descartado sem derrubar a busca.
 
 **A metabusca espaça as próprias consultas.** O DuckDuckGo degrada por cadência, não por
 volume: as quatro consultas saíam em sequência imediata e a última voltava com 1 resultado
@@ -185,6 +189,10 @@ descarta deterministicamente:
   LinkedIn o caminho precisa conter `/jobs/`; `/feed/update/` e `/posts/` são post *sobre* a
   vaga, não a vaga;
 - **link**: anúncio que não responde ou redireciona para uma página genérica.
+
+Os mesmos hard filters rodam novamente depois do enriquecimento da página. Isso é
+obrigatório porque ATS/JSON-LD podem revelar data antiga, praça incompatível ou exigência de
+senioridade que não apareciam no snippet truncado da fonte.
 
 No caminho de texto livre, o nome da empresa devolvido pelo modelo é conferido contra o
 material de origem: se não aparecer lá, vira `Desconhecida` com confiança `baixa`. A mesma
@@ -234,7 +242,14 @@ anúncio, porque o texto vem do modelo e muda de execução para execução (com
 a mesma vaga era reanalisada e cobrada todo dia).
 
 Erros 429/5xx da API ganham backoff exponencial (3 tentativas) e, no fim do lote, ainda há
-uma segunda passada sequencial para as vagas que falharam.
+uma tentativa sequencial final para as vagas que falharam. `Retry-After` é respeitado quando
+presente; erros 400/401/403 e mudanças de contrato não são repetidos como se fossem
+instabilidade. Se restarem falhas, o CLI termina com código 2 para sinalizar resultado
+parcial a automações.
+
+Execuções simultâneas do CLI são serializadas por lock de processo. Isso evita que dois
+comandos façam read-modify-write sobre `historico.json`/cache ao mesmo tempo e a última
+gravação apague o estado da primeira.
 
 Para usar outro arquivo de histórico, defina `TRIAGEM_HISTORICO` com o caminho desejado.
 
@@ -265,7 +280,8 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-Cobrem o pipeline sem chamar a API: parse do input, regra fixa do D2, score composto,
+São 275 testes sem chamadas reais à API, com cobertura de branches mínima de 68% no CI.
+Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
 internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de

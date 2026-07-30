@@ -22,6 +22,7 @@ from triagem.buscador import (
     DIAS_MAXIMOS_ANUNCIO,
     MARCADORES_EXPIRADOS,
     MODELO_BUSCA,
+    ContratoFonteAlterado,
     Inspecao,
     _ancorar_empresa,
     _ancorar_localizacao,
@@ -32,6 +33,7 @@ from triagem.buscador import (
     _e_router_de_redirect,
     _empresa_do_jsonld_confiavel,
     _enriquecer_descricao,
+    _extrair_jobposting,
     _fonte_estruturada,
     _host_de_anuncio,
     _host_e_seguro,
@@ -39,6 +41,7 @@ from triagem.buscador import (
     _limpar_url,
     _local_declarado_incompativel,
     _localizacao_compativel,
+    _motivo_reprovacao,
     _normalizar,
     _normalizar_com_indices,
     _obter,
@@ -161,6 +164,25 @@ def _resposta_gemini(texto):
     return type("Resposta", (), {"candidates": [candidate]})()
 
 
+def _material_json(evidencia="meu cv"):
+    return json.dumps(
+        {
+            "fit": [
+                {"texto": "Fit 1", "evidencia_cv": evidencia},
+                {"texto": "Fit 2", "evidencia_cv": evidencia},
+                {"texto": "Fit 3", "evidencia_cv": evidencia},
+            ],
+            "bullets_cv": [{"texto": "Bullet", "evidencia_cv": evidencia}],
+            "gaps": ["Gap"],
+            "mensagem": "Mensagem profissional.",
+            "evidencias_mensagem": [evidencia],
+            "ats_cobertas": ["Python"],
+            "ats_ausentes": ["Terraform"],
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_analisador_gemini_usa_schema_pydantic():
     resposta = _resposta_gemini(_analise().model_dump_json())
     client = _ClienteFake(resposta)
@@ -179,10 +201,12 @@ def test_analisador_rejeita_resposta_sem_parsed():
 
 
 def test_gerador_cv_gemini_retorna_texto():
-    client = _ClienteFake(_resposta_gemini("material pronto"))
+    client = _ClienteFake(_resposta_gemini(_material_json()))
     material = gerar_material(client, "meu cv", "a vaga", _analise().model_dump())
-    assert material == "material pronto"
+    assert "### 1. Fit em 3 bullets" in material
+    assert "Mensagem profissional." in material
     assert client.models.chamada["config"].system_instruction
+    assert client.models.chamada["config"].response_mime_type == "application/json"
 
 
 # Medido ao vivo em 2026-07-27: com a ferramenta google_search, toda a família 2.0 e
@@ -338,6 +362,11 @@ def test_regime_indefinido_recebe_nota_quatro_e_alerta():
     assert any("não declarado" in a.lower() for a in vaga.analise.alertas)
 
 
+def test_relatorio_renderiza_regime_indefinido():
+    texto = render_relatorio([pontuar(_analise(regime="indefinido"), "id")])
+    assert "REGIME: INDEFINIDO" in texto
+
+
 def test_indefinido_vale_menos_que_presencial_declarado():
     # Omissão de metadado é pior que condição ruim conhecida: com presencial em
     # Curitiba dá para decidir; sem regime nenhum, não.
@@ -455,8 +484,8 @@ def test_campos_autoritativos_nao_inventam_quando_a_origem_esta_vazia():
     origem = json.dumps({"titulo": "DevOps Júnior", "empresa": "", "localizacao": ""})
     analise = _analise(regime="hibrido", empresa="Inferida pelo modelo")
     imposta = _impor_campos_autoritativos(analise, origem)
-    assert imposta.empresa == "Inferida pelo modelo"
-    assert imposta.regime == "hibrido"
+    assert imposta.empresa == "Desconhecida"
+    assert imposta.regime == "indefinido"
 
 
 def test_campos_autoritativos_impoem_indefinido_quando_so_a_cidade_e_declarada():
@@ -493,6 +522,7 @@ def test_prompt_de_analise_proibe_inferir_regime():
     assert "infira com cautela" not in prompt
     assert "NÃO infira" in prompt
     assert "copie-o" in prompt
+    assert "deixe o campo vazio" not in prompt
 
 
 def test_prompt_descreve_as_dimensoes_que_o_schema_realmente_tem():
@@ -661,7 +691,7 @@ def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
                 {
                     "titulo": "Dev .NET Jr",
                     "empresa": "Empresa",
-                    "descricao": "Vaga remota para desenvolvimento C# e .NET com APIs REST.",
+                        "descricao": "Vaga remota no Brasil para desenvolvimento C# e .NET com APIs REST.",
                     "link": "https://example.com/vagas/dev-net-jr-8821",
                     "origem": "site",
                     "publicada_em": "2026-07-20",
@@ -669,7 +699,7 @@ def test_busca_web_normaliza_e_remove_links_duplicados(monkeypatch):
                 {
                     "titulo": "Dev .NET Jr duplicada",
                     "empresa": "Empresa",
-                    "descricao": "Mesma vaga remota para desenvolvimento C# e .NET.",
+                        "descricao": "Mesma vaga remota no Brasil para desenvolvimento C# e .NET.",
                     "link": "https://example.com/vagas/dev-net-jr-8821",
                     "origem": "site",
                     "publicada_em": "",
@@ -780,7 +810,7 @@ def test_busca_adzuna_nao_vaza_app_id_no_link(monkeypatch):
         (_buscar_adzuna, {"ADZUNA_APP_ID": "app", "ADZUNA_API_KEY": "key"}),
     ],
 )
-def test_fonte_ignora_resposta_json_invalida(monkeypatch, funcao, variaveis):
+def test_fonte_sinaliza_resposta_json_invalida(monkeypatch, funcao, variaveis):
     for nome, valor in variaveis.items():
         monkeypatch.setenv(nome, valor)
 
@@ -793,7 +823,8 @@ def test_fonte_ignora_resposta_json_invalida(monkeypatch, funcao, variaveis):
 
     monkeypatch.setattr("triagem.buscador.httpx.get", lambda *args, **kwargs: Resposta())
     monkeypatch.setattr("triagem.buscador.httpx.post", lambda *args, **kwargs: Resposta())
-    assert funcao("DevOps Jr", 3) == []
+    with pytest.raises(ContratoFonteAlterado):
+        funcao("DevOps Jr", 3)
 
 
 @pytest.mark.parametrize(
@@ -803,7 +834,7 @@ def test_fonte_ignora_resposta_json_invalida(monkeypatch, funcao, variaveis):
         (_buscar_adzuna, {"ADZUNA_APP_ID": "app", "ADZUNA_API_KEY": "key"}),
     ],
 )
-def test_fonte_engole_erro_de_rede_sem_derrubar_a_busca(monkeypatch, funcao, variaveis):
+def test_adapter_propaga_erro_para_orquestrador_servir_cache(monkeypatch, funcao, variaveis):
     for nome, valor in variaveis.items():
         monkeypatch.setenv(nome, valor)
 
@@ -812,7 +843,8 @@ def test_fonte_engole_erro_de_rede_sem_derrubar_a_busca(monkeypatch, funcao, var
 
     monkeypatch.setattr("triagem.buscador.httpx.get", explode)
     monkeypatch.setattr("triagem.buscador.httpx.post", explode)
-    assert funcao("DevOps Jr", 3) == []
+    with pytest.raises(RuntimeError, match="não herda"):
+        funcao("DevOps Jr", 3)
 
 
 def test_redigir_segredos_mascara_chaves_do_ambiente(monkeypatch):
@@ -848,6 +880,15 @@ def test_url_do_linkedin_estavel_entre_execucoes():
 )
 def test_dias_desde_aceita_formatos_das_apis(bruto, esperado_none):
     assert (_dias_desde(bruto) is None) is esperado_none
+
+
+def test_data_de_publicacao_muito_no_futuro_e_reprovada():
+    futura = _vaga(
+        "DevOps Júnior",
+        publicada_em=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+    )
+    assert _dias_desde(futura.publicada_em) == -1
+    assert _motivo_reprovacao(futura) == "antiga"
 
 
 def test_area_e_decidida_pelo_titulo_e_nao_pela_descricao():
@@ -983,10 +1024,15 @@ def test_chamadas_de_api_tem_timeout_explicito():
     client = _ClienteFake(_resposta_gemini(_analise().model_dump_json()))
     analisar_vaga(client, "vaga de teste")
     assert client.models.chamada["config"].http_options.timeout == TIMEOUT_ANALISE_MS
-
-    client = _ClienteFake(_resposta_gemini("material"))
-    gerar_material(client, "cv", "vaga", _analise().model_dump())
+    client = _ClienteFake(_resposta_gemini(_material_json("curriculo")))
+    gerar_material(client, "curriculo", "vaga", _analise().model_dump())
     assert client.models.chamada["config"].http_options.timeout == TIMEOUT_ANALISE_MS
+
+
+def test_material_cv_rejeita_evidencia_inventada():
+    client = _ClienteFake(_resposta_gemini(_material_json("certificação inexistente")))
+    with pytest.raises(ValueError, match="sem evidência literal"):
+        gerar_material(client, "meu cv real", "vaga", _analise().model_dump())
 
 
 def test_prompts_sao_lidos_do_disco_uma_vez_so():
@@ -1015,7 +1061,7 @@ def test_link_com_soluco_de_rede_sobrevive(monkeypatch):
     class Resposta:
         status_code = 200
         url = "https://exemplo.com.br/v"
-        text = "vaga aberta"
+        text = "DevOps Jr — candidate-se agora para esta vaga aberta"
 
     chamadas = {"n": 0}
 
@@ -1089,6 +1135,13 @@ def test_cache_serve_dentro_do_ttl_e_expira_depois():
 def test_cache_corrompido_nao_derruba_a_busca(tmp_path, monkeypatch):
     arquivo = tmp_path / "cache_busca.json"
     arquivo.write_text("{ isso não é json", encoding="utf-8")
+    monkeypatch.setattr(cache, "ARQUIVO", arquivo)
+    assert cache.carregar() == {"entradas": {}, "circuitos": {}}
+
+
+def test_cache_json_valido_com_shape_errado_nao_derruba(tmp_path, monkeypatch):
+    arquivo = tmp_path / "cache_busca.json"
+    arquivo.write_text('{"entradas": [], "circuitos": {}}', encoding="utf-8")
     monkeypatch.setattr(cache, "ARQUIVO", arquivo)
     assert cache.carregar() == {"entradas": {}, "circuitos": {}}
 
@@ -1510,7 +1563,7 @@ def test_pesos_invalidos_dao_erro_claro(texto, erro):
         parse_pesos(texto)
 
 
-def test_prefiltro_remove_senior_e_deduplica_semanticamente():
+def test_prefiltro_remove_senior_sem_fundir_requisicoes_por_titulo():
     def vaga(titulo, empresa, link, descricao):
         return VagaEncontrada(
             titulo=titulo,
@@ -1547,8 +1600,46 @@ def test_prefiltro_remove_senior_e_deduplica_semanticamente():
         ),
     ]
     selecionadas = _selecionar_candidatas(vagas, 10)
-    assert len(selecionadas) == 1
-    assert selecionadas[0].empresa == "Empresa B"
+    assert len(selecionadas) == 2
+    assert {vaga.empresa for vaga in selecionadas} == {"Empresa B"}
+
+
+def test_politica_e_reaplicada_a_data_descoberta_no_enriquecimento():
+    antiga = _vaga(
+        "DevOps Júnior",
+        publicada_em=(
+            datetime.now(timezone.utc) - timedelta(days=DIAS_MAXIMOS_ANUNCIO + 1)
+        ).isoformat(),
+    )
+    assert _motivo_reprovacao(antiga, validar_url=False) == "antiga"
+
+
+def test_jsonld_com_varias_vagas_escolhe_titulo_correspondente():
+    html = """
+    <script type="application/ld+json">
+    {"@graph": [
+      {"@type": "JobPosting", "title": "Data Engineer", "url": "https://x.test/jobs/1",
+       "jobLocation": {"address": {"addressLocality": "Recife"}}},
+      {"@type": "JobPosting", "title": "DevOps Junior", "url": "https://x.test/jobs/2",
+       "jobLocation": {"address": {"addressLocality": "Curitiba"}}}
+    ]}
+    </script>
+    """
+    anuncio = _extrair_jobposting(
+        html, "x.test", "https://x.test/jobs/desconhecida", "DevOps Junior"
+    )
+    assert anuncio.titulo == "DevOps Junior"
+    assert anuncio.localidade == "Curitiba"
+
+
+def test_jsonld_ambiguo_falha_fechado():
+    html = """
+    <script type="application/ld+json">
+    [{"@type": "JobPosting", "title": "DevOps Junior A"},
+     {"@type": "JobPosting", "title": "DevOps Junior B"}]
+    </script>
+    """
+    assert _extrair_jobposting(html, "x.test", "", "DevOps Junior").vazio()
 
 
 def test_portal_internacional_exige_evidencia_de_aceite_no_brasil():
@@ -2044,6 +2135,7 @@ def test_normalizar_com_indices_resiste_a_entrada_aleatoria():
     "conteudo",
     [
         "# CV\n<!-- PRIVADO -->Telefone: 41 99999-9999\nresto do cv",
+        "# CV\n<!-- PRIVADO\nTelefone: 41 99999-9999\nresto do cv",
         "# CV\n<!-- PRIVADO -->Telefone<!-- FIM PRIVADO -->",
         "# CV\n<!-- PRIVADO -->Telefone<!-- \\PRIVADO -->",
         "# CV\nTelefone<!-- /PRIVADO -->",

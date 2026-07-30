@@ -66,14 +66,16 @@ def gravar(categoria: str, rotulo: str, conteudo: str, meta: Optional[dict] = No
         digest = hashlib.sha256((rotulo or "").encode("utf-8")).hexdigest()[:10]
         carimbo = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         arquivo = destino / f"{carimbo}_{_nome_seguro(rotulo)}_{digest}.json"
-        corpo = conteudo[:MAX_BYTES_POR_PAYLOAD]
+        bruto = conteudo.encode("utf-8")
+        truncado = len(bruto) > MAX_BYTES_POR_PAYLOAD
+        corpo = bruto[:MAX_BYTES_POR_PAYLOAD].decode("utf-8", errors="ignore")
         arquivo.write_text(
             json.dumps(
                 {
                     "rotulo": rotulo,
                     "gravado_em": datetime.now(timezone.utc).isoformat(),
-                    "truncado": len(conteudo) > MAX_BYTES_POR_PAYLOAD,
-                    "tamanho_original": len(conteudo),
+                    "truncado": truncado,
+                    "tamanho_original": len(bruto),
                     "meta": meta or {},
                     "conteudo": corpo,
                 },

@@ -37,6 +37,7 @@ HORAS_CIRCUITO_ABERTO = 24
 # O TTL só decide o que é servido; nada removia a entrada do disco. Buscas com
 # pedidos diferentes geram chaves diferentes, então o arquivo crescia para sempre.
 DIAS_RETENCAO = 30
+VERSAO_CACHE = 2
 
 
 def aplicar_config_do_ambiente() -> None:
@@ -51,7 +52,7 @@ def _agora() -> datetime:
 
 def _chave(fonte: str, consulta: str) -> str:
     digest = hashlib.sha256(consulta.encode("utf-8")).hexdigest()[:16]
-    return f"{fonte}|{digest}"
+    return f"v{VERSAO_CACHE}|{fonte}|{digest}"
 
 
 def carregar() -> dict:
@@ -64,8 +65,25 @@ def carregar() -> dict:
         return {"entradas": {}, "circuitos": {}}
     if not isinstance(dados, dict):
         return {"entradas": {}, "circuitos": {}}
+    if not isinstance(dados.get("entradas", {}), dict):
+        return {"entradas": {}, "circuitos": {}}
+    if not isinstance(dados.get("circuitos", {}), dict):
+        return {"entradas": {}, "circuitos": {}}
     dados.setdefault("entradas", {})
     dados.setdefault("circuitos", {})
+    dados["entradas"] = {
+        chave: entrada
+        for chave, entrada in dados["entradas"].items()
+        if isinstance(chave, str)
+        and isinstance(entrada, dict)
+        and isinstance(entrada.get("gravado_em"), str)
+        and "dados" in entrada
+    }
+    dados["circuitos"] = {
+        chave: circuito
+        for chave, circuito in dados["circuitos"].items()
+        if isinstance(chave, str) and isinstance(circuito, dict)
+    }
     podar(dados)
     return dados
 
@@ -113,7 +131,11 @@ def _idade_segundos(gravado_em: str) -> Optional[float]:
         return None
     if momento.tzinfo is None:
         momento = momento.replace(tzinfo=timezone.utc)
-    return (_agora() - momento).total_seconds()
+    idade = (_agora() - momento).total_seconds()
+    # Timestamp muito no futuro é estado inválido, não cache eternamente fresco.
+    if idade < -300:
+        return None
+    return max(0.0, idade)
 
 
 def obter(estado: dict, fonte: str, consulta: str) -> tuple[Optional[Any], Optional[float]]:
@@ -142,6 +164,10 @@ def guardar(estado: dict, fonte: str, consulta: str, dados: Any) -> None:
     }
 
 
+def remover(estado: dict, fonte: str, consulta: str) -> None:
+    estado["entradas"].pop(_chave(fonte, consulta), None)
+
+
 def circuito_aberto(estado: dict, fonte: str) -> Optional[float]:
     """Horas que ainda faltam para o circuito fechar, ou None se está fechado."""
     circuito = estado["circuitos"].get(fonte)
@@ -149,7 +175,7 @@ def circuito_aberto(estado: dict, fonte: str) -> Optional[float]:
         return None
     try:
         ate = datetime.fromisoformat(circuito["aberto_ate"])
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if ate.tzinfo is None:
         ate = ate.replace(tzinfo=timezone.utc)
@@ -160,7 +186,11 @@ def circuito_aberto(estado: dict, fonte: str) -> Optional[float]:
 def registrar_falha(estado: dict, fonte: str) -> bool:
     """Conta a falha e devolve True quando o circuito passou a ficar aberto."""
     circuito = estado["circuitos"].setdefault(fonte, {"falhas": 0, "aberto_ate": None})
-    circuito["falhas"] = int(circuito.get("falhas", 0)) + 1
+    try:
+        falhas = int(circuito.get("falhas", 0))
+    except (TypeError, ValueError):
+        falhas = 0
+    circuito["falhas"] = falhas + 1
     if circuito["falhas"] >= FALHAS_PARA_ABRIR:
         circuito["aberto_ate"] = (
             _agora() + timedelta(hours=HORAS_CIRCUITO_ABERTO)

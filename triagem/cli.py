@@ -11,10 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
+from filelock import FileLock, Timeout
 
 from . import alvos_ats, ats, cache, dedup, historico
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
 from .buscador import (
+    _limpar_url,
     _normalizar,
     _redigir_segredos,
     _remoto_afirmado,
@@ -126,20 +128,29 @@ def main() -> int:
     cache.aplicar_config_do_ambiente()
     alvos_ats.aplicar_config_do_ambiente()
 
-    if args.comando == "buscar":
-        return _cmd_buscar(args)
-    if args.comando == "analisar":
-        return _cmd_analisar(args)
-    if args.comando == "historico":
-        return _cmd_historico(args)
-    if args.comando == "status":
-        return _cmd_status(args)
-    if args.comando == "cv":
-        return _cmd_cv(args)
-    if args.comando == "limpar-cache":
-        return _cmd_limpar_cache(args)
-    if args.comando == "sync-ats":
-        return _cmd_sync_ats(args)
+    # Serializa comandos do CLI. Sem lock, duas execuções fazem read-modify-write
+    # sobre JSONs diferentes e a última apaga o estado gravado pela primeira.
+    historico.ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(historico.ARQUIVO.with_suffix(".lock")), timeout=2)
+    try:
+        with lock:
+            if args.comando == "buscar":
+                return _cmd_buscar(args)
+            if args.comando == "analisar":
+                return _cmd_analisar(args)
+            if args.comando == "historico":
+                return _cmd_historico(args)
+            if args.comando == "status":
+                return _cmd_status(args)
+            if args.comando == "cv":
+                return _cmd_cv(args)
+            if args.comando == "limpar-cache":
+                return _cmd_limpar_cache(args)
+            if args.comando == "sync-ats":
+                return _cmd_sync_ats(args)
+    except Timeout:
+        print("Outra execução do triar está atualizando o estado. Tente novamente em instantes.")
+        return 1
     return 1
 
 
@@ -264,7 +275,11 @@ def _cmd_buscar(args) -> int:
             empresa=vaga.empresa,
             titulo=vaga.titulo,
             confianca=vaga.confianca_empresa,
+            idade_dias=dedup.idade_da_publicacao(vaga.publicada_em),
             localidade=vaga.localizacao,
+            ats_provedor=vaga.ats_provedor,
+            ats_token=vaga.ats_token,
+            ats_job_id=vaga.ats_job_id,
         )
         for indice, vaga in enumerate(vagas)
     ]
@@ -291,12 +306,18 @@ def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> Anal
         return analise
 
     mudancas: dict = {}
-    empresa = (origem.get("empresa") or "").strip()
-    if empresa and origem.get("confianca_empresa") == "alta":
-        mudancas["empresa"] = empresa
+    # VagaEncontrada.model_dump() sempre contém estas chaves. A presença da
+    # chave, mesmo vazia, identifica o caminho estruturado de `buscar`.
+    if "empresa" in origem:
+        empresa = str(origem.get("empresa") or "").strip()
+        mudancas["empresa"] = (
+            empresa
+            if empresa and origem.get("confianca_empresa") != "baixa"
+            else "Desconhecida"
+        )
 
-    local = (origem.get("localizacao") or "").strip()
-    if local:
+    if "localizacao" in origem:
+        local = str(origem.get("localizacao") or "").strip()
         mudancas["localizacao"] = local
         # A fonte estruturada é dona da modalidade. Cidade sem modalidade não
         # autoriza o modelo a completar a lacuna como "remoto": o contrato do
@@ -309,6 +330,14 @@ def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> Anal
             mudancas["regime"] = "presencial"
         else:
             mudancas["regime"] = "indefinido"
+
+    link = str(origem.get("link_final") or origem.get("link") or "").strip()
+    if link:
+        mudancas["link"] = _limpar_url(link)
+    if origem.get("origem"):
+        mudancas["origem"] = str(origem["origem"])
+    if "publicada_em" in origem:
+        mudancas["publicada_em"] = str(origem.get("publicada_em") or "")
 
     return analise.model_copy(update=mudancas) if mudancas else analise
 
@@ -346,6 +375,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
     resultados: List[VagaPontuada] = []
     pendentes: List[Tuple[str, str]] = []  # (id, texto)
     vistos = set()
+    historico_recalculado = False
 
     for indice, texto in enumerate(textos):
         vid = historico.gerar_id(chaves[indice] if chaves else texto)
@@ -368,12 +398,18 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
         entrada = hist.get(vid)
         if entrada and entrada.get("analise") and not args.reanalisar:
             analise = AnaliseVaga.model_validate(entrada["analise"])
-            # Com pesos personalizados o score gravado não vale: recalcula.
-            reaproveitado = (
-                pontuar(analise, vid, pesos) if pesos
-                else VagaPontuada(id=vid, analise=analise, score_final=entrada.get("score_final"))
-            )
+            analise = _impor_campos_autoritativos(analise, entrada.get("texto", ""))
+            # Regras determinísticas evoluem. Nunca reutilize score materializado
+            # por uma versão anterior do pipeline.
+            reaproveitado = pontuar(analise, vid, pesos)
             resultados.append(reaproveitado)
+            if (
+                entrada.get("pipeline_version") != historico.PIPELINE_VERSION
+                or entrada.get("score_final") != reaproveitado.score_final
+                or entrada.get("analise") != reaproveitado.analise.model_dump()
+            ):
+                historico.registrar(hist, reaproveitado, entrada.get("texto", ""))
+                historico_recalculado = True
             print(f"  [{vid}] {analise.empresa or '?'} - {analise.titulo_normalizado}: "
                   f"já no histórico (status: {entrada['status']}) — pulando. Use --reanalisar para refazer.")
         else:
@@ -395,29 +431,47 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
             client, pendentes, args.modelo, args.paralelo, pesos
         )
 
-        # Segunda chance sequencial para falhas individuais.
-        if falhas:
-            print(f"\n  Re-tentando {len(falhas)} vaga(s) que falharam...")
-            restantes = []
-            for vid, texto, _ in falhas:
-                try:
-                    analises[vid] = analisar_vaga(client, texto, args.modelo)
-                    print(f"  [{vid}] OK na segunda tentativa")
-                except Exception as e:  # noqa: BLE001 — registramos e seguimos
-                    restantes.append((vid, texto, e))
-            falhas = restantes
-
+        # Persiste o que já terminou antes de esperar a segunda passagem. Se o
+        # processo for interrompido, chamadas pagas não são perdidas.
         for vid, texto in pendentes:
             if vid not in analises:
                 continue
             vaga = pontuar(_impor_campos_autoritativos(analises[vid], texto), vid, pesos)
             historico.registrar(hist, vaga, texto)
             resultados.append(vaga)
+        if analises:
+            try:
+                historico.salvar(hist)
+            except OSError as e:
+                print(f"Erro ao salvar checkpoint do histórico: {e}")
+                return 1
+
+        # Segunda chance sequencial para falhas individuais.
+        if falhas:
+            print(f"\n  Re-tentando {len(falhas)} vaga(s) que falharam...")
+            restantes = []
+            for vid, texto, _ in falhas:
+                try:
+                    analise = analisar_vaga(client, texto, args.modelo, tentativas=1)
+                    vaga = pontuar(_impor_campos_autoritativos(analise, texto), vid, pesos)
+                    historico.registrar(hist, vaga, texto)
+                    resultados.append(vaga)
+                    print(f"  [{vid}] OK na segunda tentativa")
+                except Exception as e:  # noqa: BLE001 — registramos e seguimos
+                    restantes.append((vid, texto, e))
+            falhas = restantes
 
         try:
             historico.salvar(hist)
         except OSError as e:
             print(f"Erro ao salvar histórico: {e}")
+            return 1
+
+    elif historico_recalculado:
+        try:
+            historico.salvar(hist)
+        except OSError as e:
+            print(f"Erro ao atualizar histórico para a versão atual: {e}")
             return 1
 
     if not resultados:
@@ -440,7 +494,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
         for vid, _, e in falhas:
             print(f"  [{vid}] {type(e).__name__}: {_redigir_segredos(str(e))}")
         print("Rode novamente para reprocessar (as já analisadas serão puladas pelo histórico).")
-    return 0
+    return 2 if falhas else 0
 
 
 def _analisar_paralelo(client, pendentes, modelo, paralelo, pesos=None):

@@ -1,5 +1,19 @@
 # Estado do projeto
 
+## Hardening da auditoria de 2026-07-30
+
+- Metadados da busca (`empresa`, `regime/localização`, `link`, `origem`, `publicada_em`)
+  são reimpostos depois do LLM; ausência de regime estruturado vira `indefinido`.
+- Os hard filters rodam novamente depois do enriquecimento por ATS/JSON-LD.
+- Páginas com múltiplos `JobPosting` são selecionadas por URL/título; ambiguidade falha
+  fechado.
+- Dedup não usa mais empresa+título sem corroboração e nunca funde IDs de ATS distintos.
+- O material de candidatura usa schema estruturado e evidência literal validada contra o CV.
+- Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
+  transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
+- O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
+- CI executa Ruff, compileall e 275 testes com cobertura de branches mínima de 68%.
+
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de
 material de CV. Também busca vagas atuais na web a partir de um pedido em linguagem
 natural e do CV base. A integração de IA usa a API Google Gemini.

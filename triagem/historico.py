@@ -19,6 +19,7 @@ ARQUIVO = Path(
 )
 
 STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
+PIPELINE_VERSION = 2
 
 PADRAO = Path(__file__).resolve().parent.parent / "historico.json"
 
@@ -105,7 +106,7 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
     anterior = hist.get(vaga.id, {})
     if vaga.score_final is None:
         status = "descartada"
-    elif anterior.get("status") in ("aplicado", "entrevista", "recusado"):
+    elif anterior.get("status") in ("aplicado", "entrevista", "recusado", "fechada"):
         status = anterior["status"]
     else:
         status = "novo"
@@ -113,6 +114,7 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
         "analisado_em": datetime.now().isoformat(timespec="seconds"),
         "status": status,
         "score_final": vaga.score_final,
+        "pipeline_version": PIPELINE_VERSION,
         "texto": texto,
         "analise": vaga.analise.model_dump(),
     }

@@ -10,7 +10,12 @@ ROTULOS_NIVEL = {
     "pleno_disfarcado": "PLENO DISFARÇADO",
     "senior": "SÊNIOR",
 }
-ROTULOS_REGIME = {"remoto": "REMOTO", "hibrido": "HÍBRIDO", "presencial": "PRESENCIAL"}
+ROTULOS_REGIME = {
+    "remoto": "REMOTO",
+    "hibrido": "HÍBRIDO",
+    "presencial": "PRESENCIAL",
+    "indefinido": "INDEFINIDO",
+}
 
 
 def separar(resultados: List[VagaPontuada]) -> Tuple[List[VagaPontuada], List[VagaPontuada]]:
