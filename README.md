@@ -53,8 +53,11 @@ cascata de dedup A/B/C ──▶ Gemini (notas D1-D5 + alertas)
   (`remoto=10 · híbrido CWB=7 · presencial CWB=6 · indefinido=4`), com punição extra quando
   a praça está fora do raio de deslocamento (presencial=1, híbrido=2). O score composto é
   `D1*0.30 + D2*0.25 + D3*0.20 + D4*0.15 + D5*0.10` em 0–100.
-- As regras de triagem estão em [prompts/system_prompt.md](prompts/system_prompt.md) e as
-  do gerador de CV em [prompts/cv_prompt.md](prompts/cv_prompt.md) — edite sem tocar no código.
+- As regras de triagem estão em
+  [triagem/prompts/system_prompt.md](triagem/prompts/system_prompt.md) e as do gerador de
+  CV em [triagem/prompts/cv_prompt.md](triagem/prompts/cv_prompt.md) — edite sem tocar no
+  código. Os arquivos fazem parte do pacote instalado, portanto o wheel funciona fora do
+  checkout.
 
 ### Ética de coleta
 
@@ -81,6 +84,7 @@ Variáveis de ambiente (todas ficam só no `.env`, que é gitignorado):
 | `JOOBLE_API_KEY` | não | fonte estruturada de vagas em `triar buscar` |
 | `ADZUNA_APP_ID` + `ADZUNA_API_KEY` | não | fonte estruturada de vagas (as duas juntas) |
 | `TRIAGEM_HISTORICO` | não | caminho alternativo do `historico.json` |
+| `TRIAGEM_CV_BASE` | não | caminho alternativo do `perfil/cv_base.md` |
 
 Como alternativa, instale o comando `triar` diretamente:
 
@@ -91,8 +95,10 @@ triar --help
 
 O gerador de CV usa `perfil/cv_base.md` como fonte de verdade — o arquivo contém dados
 pessoais e fica fora do versionamento (`.gitignore`); o formato esperado está em
-[perfil/cv_base.exemplo.md](perfil/cv_base.exemplo.md). O gerador nunca inventa nada que
-não esteja no CV base.
+[perfil/cv_base.exemplo.md](perfil/cv_base.exemplo.md). A saída do gerador é estruturada:
+cada argumento e bullet precisa trazer um trecho literal de evidência do CV base. O programa
+valida essas evidências antes de renderizar o Markdown e rejeita a resposta inteira quando
+uma afirmação não tem respaldo.
 
 > **Privacidade:** na camada gratuita do Gemini, o conteúdo enviado pode ser usado pelo
 > Google para melhorar seus produtos. O comando `cv` envia o CV base e o texto da vaga, e
@@ -140,7 +146,9 @@ as execuções seguintes pulam a fonte em vez de gastar latência para receber o
 
 O estado do circuito é gravado em disco, então ele conta falhas **entre** execuções — que é
 o que importa num programa que termina a cada uso. O cache se poda sozinho: entradas com
-mais de 30 dias saem do arquivo no carregamento.
+mais de 30 dias saem do arquivo no carregamento. A chave do cache tem versão de contrato;
+mudanças incompatíveis invalidam automaticamente entradas antigas. JSON sintaticamente
+válido com shape incorreto também é descartado sem derrubar a busca.
 
 **A metabusca espaça as próprias consultas.** O DuckDuckGo degrada por cadência, não por
 volume: as quatro consultas saíam em sequência imediata e a última voltava com 1 resultado
@@ -185,6 +193,10 @@ descarta deterministicamente:
   LinkedIn o caminho precisa conter `/jobs/`; `/feed/update/` e `/posts/` são post *sobre* a
   vaga, não a vaga;
 - **link**: anúncio que não responde ou redireciona para uma página genérica.
+
+Os mesmos hard filters rodam novamente depois do enriquecimento da página. Isso é
+obrigatório porque ATS/JSON-LD podem revelar data antiga, praça incompatível ou exigência de
+senioridade que não apareciam no snippet truncado da fonte.
 
 No caminho de texto livre, o nome da empresa devolvido pelo modelo é conferido contra o
 material de origem: se não aparecer lá, vira `Desconhecida` com confiança `baixa`. A mesma
@@ -234,7 +246,14 @@ anúncio, porque o texto vem do modelo e muda de execução para execução (com
 a mesma vaga era reanalisada e cobrada todo dia).
 
 Erros 429/5xx da API ganham backoff exponencial (3 tentativas) e, no fim do lote, ainda há
-uma segunda passada sequencial para as vagas que falharam.
+uma tentativa sequencial final para as vagas que falharam. `Retry-After` é respeitado quando
+presente; erros 400/401/403 e mudanças de contrato não são repetidos como se fossem
+instabilidade. Se restarem falhas, o CLI termina com código 2 para sinalizar resultado
+parcial a automações.
+
+Execuções simultâneas do CLI são serializadas por lock de processo. Isso evita que dois
+comandos façam read-modify-write sobre `historico.json`/cache ao mesmo tempo e a última
+gravação apague o estado da primeira.
 
 Para usar outro arquivo de histórico, defina `TRIAGEM_HISTORICO` com o caminho desejado.
 
@@ -265,7 +284,8 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-Cobrem o pipeline sem chamar a API: parse do input, regra fixa do D2, score composto,
+São 290 testes sem chamadas reais à API, com cobertura de branches mínima de 75% no CI.
+Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
 internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de
@@ -299,8 +319,8 @@ outro que a nota do `indefinido` citada no prompt bata com `D2_POR_REGIME`.
 | `triagem/curriculo.py` | Gerador de CV sob medida + mensagem de candidatura |
 | `triagem/cache.py` | Cache com TTL por fonte + circuit breaker do Google Search |
 | `triagem/schema.py` | Modelos Pydantic (contrato do JSON) |
-| `prompts/system_prompt.md` | Perfil do candidato + regras de triagem |
-| `prompts/cv_prompt.md` | Regras do gerador de material de candidatura |
+| `triagem/prompts/system_prompt.md` | Perfil do candidato + regras de triagem |
+| `triagem/prompts/cv_prompt.md` | Regras do gerador de material de candidatura |
 | `perfil/cv_base.md` | CV base real (fonte de verdade do gerador; gitignorado — dados pessoais) |
 | `perfil/cv_base.exemplo.md` | Template versionável do CV base |
 | `tests/test_pipeline.py` | Testes do pipeline sem API |

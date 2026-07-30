@@ -35,6 +35,7 @@ from . import alvos_ats, ats, cache, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
+    _e_transitorio,
     gerar_com_retentativa,
     texto_da_resposta,
 )
@@ -410,24 +411,12 @@ def _limpar_url(url: str) -> str:
 # cadastro de freelancer) chegaram à análise paga e receberam 59/100 e 58/100 — o
 # modelo espremeu uma home page tentando achar vaga que não existe.
 
-CAMINHOS_NAO_VAGA = (
-    "/login",
-    "/signin",
-    "/sign-in",
-    "/cadastro",
-    "/signup",
-    "/sign-up",
-    "/register",
-    "/auth",
-    "/prestador",
-    "/conta",
-    "/account",
-    "/politica",
-    "/privacidade",
-    "/termos",
-    "/quem-somos",
-    "/sobre-nos",
-    "/contato",
+CAMINHOS_NAO_VAGA = frozenset(
+    {
+        "login", "signin", "sign-in", "cadastro", "signup", "sign-up",
+        "register", "auth", "prestador", "conta", "account", "politica",
+        "privacidade", "termos", "quem-somos", "sobre-nos", "contato",
+    }
 )
 
 # Marcadores de caminho que identificam página de anúncio em português e inglês.
@@ -487,7 +476,8 @@ def _url_de_vaga_plausivel(url: str) -> bool:
         return False
     caminho = (partes.path or "").rstrip("/")
     baixo = caminho.lower()
-    if any(marcador in baixo for marcador in CAMINHOS_NAO_VAGA):
+    segmentos = {segmento for segmento in baixo.split("/") if segmento}
+    if segmentos & CAMINHOS_NAO_VAGA:
         return False
     if len(caminho) <= 1:
         return False  # domínio nu: institucional, nunca anúncio
@@ -527,7 +517,10 @@ def _dias_desde(publicada_em: str) -> Optional[int]:
             return None
     if momento.tzinfo is None:
         momento = momento.replace(tzinfo=timezone.utc)
-    return max(0, (datetime.now(timezone.utc) - momento).days)
+    diferenca = datetime.now(timezone.utc) - momento
+    if diferenca.total_seconds() < -86400:
+        return -1
+    return max(0, diferenca.days)
 
 
 # ---------------------------------------------------------------- filtros
@@ -608,7 +601,7 @@ def _chave_semantica(vaga: VagaEncontrada) -> tuple[str, str]:
 
 def _anuncio_recente(vaga: VagaEncontrada) -> bool:
     idade = _dias_desde(vaga.publicada_em)
-    return idade is None or idade <= DIAS_MAXIMOS_ANUNCIO
+    return idade is None or 0 <= idade <= DIAS_MAXIMOS_ANUNCIO
 
 
 def _remoto_afirmado(conteudo: str) -> bool:
@@ -676,15 +669,22 @@ def _localizacao_compativel(vaga: VagaEncontrada) -> bool:
     """Barra vaga que exige residência fora do Brasil sem abertura explícita."""
     host = urlsplit(vaga.link).netloc.lower()
     conteudo = _normalizar(f"{vaga.titulo} {vaga.descricao} {vaga.localizacao}")
+    aceita_br = _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
     if _restricao_de_residencia(conteudo):
-        return _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
+        return aceita_br
     if host.endswith(".br") or any(portal in host for portal in PORTAIS_BRASILEIROS):
         return True
+    if _contem_termo(conteudo, CIDADES_ACEITAS):
+        return True
     if "linkedin.com" in host and not host.startswith("br."):
-        return _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
+        return aceita_br
     if any(portal in host for portal in PORTAIS_INTERNACIONAIS):
-        return _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
-    return True  # host desconhecido: sem evidência contrária, não reprova
+        return aceita_br
+    # Domínio corporativo estrangeiro não está numa lista de portais. Se anuncia
+    # remoto, precisa provar que aceita Brasil/LATAM/global como qualquer outro.
+    if _remoto_afirmado(conteudo):
+        return aceita_br
+    return True
 
 
 MARCADORES_EXPIRADOS = (
@@ -798,14 +798,17 @@ class Anuncio:
     empresa: str = ""
     empresa_confiavel: bool = False
     remoto: Optional[bool] = None
+    hibrido: bool = False
     localidade: str = ""
     publicada_em: str = ""
     expira_em: str = ""
     descricao: str = ""
+    titulo: str = ""
+    url: str = ""
 
     def vazio(self) -> bool:
         return not any(
-            (self.empresa, self.remoto is not None, self.publicada_em,
+            (self.empresa, self.remoto is not None, self.hibrido, self.localidade, self.publicada_em,
              self.expira_em, self.descricao)
         )
 
@@ -876,22 +879,36 @@ def _anuncio_de_contrato(dados: dict, host: str = "") -> Anuncio:
         nome = organizacao.strip()
 
     tipo_local = str(dados.get("jobLocationType") or "").upper()
+    remoto = None
+    if tipo_local:
+        remoto = "TELECOMMUTE" in tipo_local
 
     return Anuncio(
         empresa=nome,
         empresa_confiavel=bool(nome) and _empresa_do_jsonld_confiavel(nome, host),
-        remoto=True if "TELECOMMUTE" in tipo_local else None,
+        remoto=remoto,
+        hibrido="HYBRID" in tipo_local or "HIBRID" in tipo_local,
         localidade=str(dados.get("addressLocality") or "").strip(),
         publicada_em=str(dados.get("datePosted") or "").strip(),
         expira_em=str(dados.get("validThrough") or "").strip(),
         descricao=_texto_visivel(str(dados.get("description") or "")),
+        titulo=str(dados.get("title") or "").strip(),
+        url=str(dados.get("url") or dados.get("@id") or "").strip(),
     )
 
 
-def _extrair_jobposting(html_bruto: str, host: str = "") -> Anuncio:
+def _extrair_jobposting(
+    html_bruto: str,
+    host: str = "",
+    url_esperada: str = "",
+    titulo_esperado: str = "",
+) -> Anuncio:
     """Lê o schema.org/JobPosting da página. Campo ausente fica vazio, nunca inferido."""
+    candidatos: list[Anuncio] = []
     for item in _blocos_jsonld(html_bruto):
-        if "JobPosting" not in str(item.get("@type", "")):
+        tipos = item.get("@type", [])
+        tipos = [tipos] if isinstance(tipos, str) else tipos
+        if not isinstance(tipos, list) or "JobPosting" not in tipos:
             continue
 
         # No schema.org a localidade fica aninhada; o contrato comum a quer plana.
@@ -903,8 +920,36 @@ def _extrair_jobposting(html_bruto: str, host: str = "") -> Anuncio:
             if isinstance(endereco, dict):
                 localidade = str(endereco.get("addressLocality") or "").strip()
 
-        return _anuncio_de_contrato({**item, "addressLocality": localidade}, host)
-    return Anuncio()
+        candidatos.append(
+            _anuncio_de_contrato({**item, "addressLocality": localidade}, host)
+        )
+    if len(candidatos) == 1:
+        return candidatos[0]
+    if not candidatos:
+        return Anuncio()
+
+    esperada = _url_canonica(url_esperada)
+    por_url = [
+        anuncio for anuncio in candidatos
+        if anuncio.url and _url_canonica(anuncio.url) == esperada
+    ]
+    if len(por_url) == 1:
+        return por_url[0]
+
+    tokens_esperados = set(_normalizar(titulo_esperado).split())
+    ranqueados = sorted(
+        candidatos,
+        key=lambda anuncio: len(
+            tokens_esperados & set(_normalizar(anuncio.titulo).split())
+        ),
+        reverse=True,
+    )
+    melhor = len(tokens_esperados & set(_normalizar(ranqueados[0].titulo).split()))
+    segundo = (
+        len(tokens_esperados & set(_normalizar(ranqueados[1].titulo).split()))
+        if len(ranqueados) > 1 else -1
+    )
+    return ranqueados[0] if melhor > segundo and melhor > 0 else Anuncio()
 
 
 def _expirado(expira_em: str) -> bool:
@@ -1130,7 +1175,12 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
             ats_job_id=alvo_ats.job_id if alvo_ats else "",
         )
 
-    anuncio = _extrair_jobposting(bruto, urlsplit(url_final or link).netloc)
+    anuncio = _extrair_jobposting(
+        bruto,
+        urlsplit(url_final or link).netloc,
+        url_final or link,
+        vaga.titulo,
+    )
     # `validThrough` no passado encerra aqui: nem enriquecimento, nem LLM.
     if _expirado(anuncio.expira_em):
         replay.gravar("descarte_expirada", link, bruto, {"validThrough": anuncio.expira_em})
@@ -1139,6 +1189,9 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
     # JobPosting é onde a extração erra, e é o que precisa ser reproduzível.
     if anuncio.vazio():
         replay.gravar("sem_jsonld", link, bruto, {"status": response.status_code})
+        if not _pagina_tem_evidencia_de_vaga(vaga, bruto):
+            replay.gravar("pagina_sem_evidencia", link, bruto, {"status": response.status_code})
+            return Inspecao(ativo=False, url_final=url_final)
     return Inspecao(ativo=True, url_final=url_final, texto_pagina=bruto, anuncio=anuncio)
 
 
@@ -1148,6 +1201,25 @@ def _texto_visivel(html_bruto: str) -> str:
         r"(?is)<(script|style|noscript|svg|head)\b.*?</\1>", " ", html_bruto or ""
     )
     return _texto_limpo(sem_ruido)
+
+
+def _pagina_tem_evidencia_de_vaga(vaga: VagaEncontrada, html_bruto: str) -> bool:
+    """Evita aceitar blog, landing page e soft-404 que apenas respondem 200."""
+    texto = _normalizar(_texto_visivel((html_bruto or "")[:200_000]))
+    tokens = [
+        token for token in _normalizar(vaga.titulo).split()
+        if len(token) >= 4
+    ]
+    correspondencias = sum(token in texto for token in tokens)
+    titulo_presente = correspondencias >= max(1, len(tokens) // 2)
+    candidatura = _contem_termo(
+        texto,
+        (
+            "apply", "application", "candidatura", "candidate se", "candidatar",
+            "inscricao", "inscreva se",
+        ),
+    )
+    return titulo_presente and candidatura
 
 
 def _enriquecer_descricao(vaga: VagaEncontrada, texto_pagina: str) -> VagaEncontrada:
@@ -1195,11 +1267,20 @@ def _aplicar_jobposting(vaga: VagaEncontrada, anuncio: Anuncio) -> VagaEncontrad
         # e o que veio do LLM perde a pouca confiança que tinha.
         mudancas["empresa"] = "Desconhecida"
         mudancas["confianca_empresa"] = "baixa"
-    if anuncio.remoto:
+    if anuncio.remoto is True:
         mudancas["localizacao"] = f"{anuncio.localidade} (Remoto)".strip() if anuncio.localidade else "Remoto"
-    elif anuncio.localidade and not _normalizar(vaga.localizacao):
+    elif anuncio.hibrido:
+        mudancas["localizacao"] = (
+            f"{anuncio.localidade} (Híbrido)".strip()
+            if anuncio.localidade else "Híbrido"
+        )
+    elif anuncio.remoto is False:
+        # jobLocationType explícito vence o agregador, inclusive quando o ATS não
+        # publicou a cidade. Preservar "Remoto" aqui reabriria a alucinação.
         mudancas["localizacao"] = anuncio.localidade
-    if anuncio.publicada_em and not (vaga.publicada_em or "").strip():
+    elif anuncio.localidade:
+        mudancas["localizacao"] = anuncio.localidade
+    if anuncio.publicada_em:
         mudancas["publicada_em"] = anuncio.publicada_em
     if len(anuncio.descricao) > len(vaga.descricao):
         mudancas["descricao"] = anuncio.descricao[:MAX_DESCRICAO_ENRIQUECIDA]
@@ -1223,6 +1304,7 @@ def _validar_links(
     vistos: set[str] = set()
     duplicadas = 0
     redirecionadas = 0
+    reprovadas_pos_enriquecimento: dict[str, int] = {}
     for vaga, inspecao in zip(vagas, inspecoes, strict=True):
         if not inspecao.ativo:
             continue
@@ -1256,6 +1338,12 @@ def _validar_links(
         atualizada = _enriquecer_descricao(atualizada, inspecao.texto_pagina)
         if len(atualizada.descricao) > antes:
             enriquecidas += 1
+        motivo = _motivo_reprovacao(atualizada, validar_url=False)
+        if motivo is not None:
+            reprovadas_pos_enriquecimento[motivo] = (
+                reprovadas_pos_enriquecimento.get(motivo, 0) + 1
+            )
+            continue
         # Dedup entre fontes: Jooble e Adzuna redirecionam para o mesmo anúncio.
         chave = _url_canonica(atualizada.chave_dedup())
         if chave in vistos:
@@ -1277,7 +1365,31 @@ def _validar_links(
         log(f"  dados autoritativos via schema.org/JobPosting: {estruturadas} vaga(s)")
     if redirect_generico:
         log(f"  redirect caiu em página genérica, link anunciado mantido: {redirect_generico}")
+    if reprovadas_pos_enriquecimento:
+        detalhes = ", ".join(
+            f"{motivo}: {total}"
+            for motivo, total in sorted(reprovadas_pos_enriquecimento.items())
+        )
+        log(f"  pós-enriquecimento reprovou: {detalhes}")
     return ativas[:limite]
+
+
+def _motivo_reprovacao(
+    vaga: VagaEncontrada, validar_url: bool = True
+) -> Optional[str]:
+    if not _host_de_anuncio(vaga):
+        return "nao_anuncio"
+    if validar_url and not _url_de_vaga_plausivel(vaga.link):
+        return "url_invalida"
+    if not _area_alvo(vaga):
+        return "area"
+    if _pontuacao_preliminar(vaga) < 8:
+        return "senioridade"
+    if not _anuncio_recente(vaga):
+        return "antiga"
+    if _local_declarado_incompativel(vaga) or not _localizacao_compativel(vaga):
+        return "local"
+    return None
 
 
 def _selecionar_candidatas(
@@ -1292,26 +1404,11 @@ def _selecionar_candidatas(
     # recalculá-la na ordenação repetia todo o trabalho de normalização e regex.
     pontuadas: list[tuple[int, VagaEncontrada]] = []
     for vaga in vagas:
-        if not _host_de_anuncio(vaga):
-            cortes["nao_anuncio"] += 1
-            continue
-        # Antes de gastar requisição ou token: a URL sequer pode ser um anúncio?
-        if not _url_de_vaga_plausivel(vaga.link):
-            cortes["url_invalida"] += 1
-            continue
-        if not _area_alvo(vaga):
-            cortes["area"] += 1
+        motivo = _motivo_reprovacao(vaga)
+        if motivo is not None:
+            cortes[motivo] += 1
             continue
         pontos = _pontuacao_preliminar(vaga)
-        if pontos < 8:
-            cortes["senioridade"] += 1
-            continue
-        if not _anuncio_recente(vaga):
-            cortes["antiga"] += 1
-            continue
-        if _local_declarado_incompativel(vaga) or not _localizacao_compativel(vaga):
-            cortes["local"] += 1
-            continue
         pontuadas.append((pontos, vaga))
 
     def _ordem(par: tuple[int, VagaEncontrada]):
@@ -1324,15 +1421,12 @@ def _selecionar_candidatas(
     candidatas = [vaga for _, vaga in pontuadas]
     unicas = []
     urls_vistas = set()
-    vagas_vistas = set()
     for vaga in candidatas:
         url = _url_canonica(vaga.link)
-        semantica = _chave_semantica(vaga)
-        if url in urls_vistas or semantica in vagas_vistas:
+        if url in urls_vistas:
             cortes["duplicada"] += 1
             continue
         urls_vistas.add(url)
-        vagas_vistas.add(semantica)
         unicas.append(vaga)
 
     descartes = ", ".join(f"{motivo}: {n}" for motivo, n in cortes.items() if n)
@@ -1350,6 +1444,18 @@ def _vaga_ou_none(**campos) -> Optional[VagaEncontrada]:
         return None
 
 
+class ContratoFonteAlterado(RuntimeError):
+    """A fonte respondeu, mas não com o contrato que o adapter entende."""
+
+
+def _erro_http_transitorio(erro: Exception) -> bool:
+    if isinstance(erro, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(erro, httpx.HTTPStatusError):
+        return erro.response.status_code in (429, 500, 502, 503, 504)
+    return False
+
+
 def _com_tentativas(
     chamada,
     tentativas: int = 3,
@@ -1358,17 +1464,19 @@ def _com_tentativas(
 ):
     """Repete uma chamada HTTP com backoff e jitter; None se todas falharem.
 
-    Engole a exceção de propósito: a URL da Jooble contém a chave de API e a
-    Adzuna leva app_id/app_key na query string.
+    O chamador redige segredos ao exibir a exceção. Erros definitivos e mudança
+    de contrato não são repetidos como se fossem instabilidade de rede.
     """
+    ultimo: Exception | None = None
     for tentativa in range(tentativas):
         try:
             return chamada()
-        except Exception:
-            if tentativa == tentativas - 1:
-                return None
+        except Exception as erro:
+            ultimo = erro
+            if not _erro_http_transitorio(erro) or tentativa == tentativas - 1:
+                raise
             time.sleep(espera_inicial * espera_base**tentativa * random.uniform(1.0, 2.0))
-    return None
+    raise ultimo  # pragma: no cover
 
 
 def _buscar_jooble(pedido: str, limite: int) -> list[VagaEncontrada]:
@@ -1399,12 +1507,17 @@ def _buscar_jooble(pedido: str, limite: int) -> list[VagaEncontrada]:
                 timeout=20,
             )
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as erro:
+                raise ContratoFonteAlterado("Jooble: resposta não contém JSON válido") from erro
 
         payload = _com_tentativas(chamar)
-        if not isinstance(payload, dict):
-            continue
-        for item in payload.get("jobs", []):
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+            raise ContratoFonteAlterado("Jooble: campo 'jobs' ausente ou não é lista")
+        for item in payload["jobs"]:
+            if not isinstance(item, dict):
+                raise ContratoFonteAlterado("Jooble: item de 'jobs' não é objeto")
             link = _limpar_url(item.get("link") or "")
             if not link or link in vistos:
                 continue
@@ -1459,12 +1572,17 @@ def _buscar_adzuna(pedido: str, limite: int) -> list[VagaEncontrada]:
                 timeout=20,
             )
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as erro:
+                raise ContratoFonteAlterado("Adzuna: resposta não contém JSON válido") from erro
 
         payload = _com_tentativas(chamar)
-        if not isinstance(payload, dict):
-            continue
-        for item in payload.get("results", []):
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            raise ContratoFonteAlterado("Adzuna: campo 'results' ausente ou não é lista")
+        for item in payload["results"]:
+            if not isinstance(item, dict):
+                raise ContratoFonteAlterado("Adzuna: item de 'results' não é objeto")
             # redirect_url traz `utm_source=<ADZUNA_APP_ID>`: limpar é obrigatório.
             link = _limpar_url(item.get("redirect_url") or "")
             if not link or link in vistos:
@@ -1734,11 +1852,19 @@ def _fonte_estruturada(
     if usar_cache:
         guardadas, idade = cache.obter(estado_cache, nome, consulta_cache)
         if guardadas is not None:
-            registrar(
-                f"  {nome}: {len(guardadas)} anúncio(s) — cache de "
-                f"{cache.descrever_idade(idade)} (use --sem-cache para forçar)"
-            )
-            return [VagaEncontrada.model_validate(d) for d in guardadas]
+            try:
+                if not isinstance(guardadas, list):
+                    raise TypeError("cache da fonte não é lista")
+                validadas = [VagaEncontrada.model_validate(d) for d in guardadas]
+            except (TypeError, ValidationError):
+                cache.remover(estado_cache, nome, consulta_cache)
+                registrar(f"  {nome}: cache incompatível descartado; consultando a fonte")
+            else:
+                registrar(
+                    f"  {nome}: {len(validadas)} anúncio(s) — cache de "
+                    f"{cache.descrever_idade(idade)} (use --sem-cache para forçar)"
+                )
+                return validadas
 
     try:
         achadas = funcao(pedido, limite_coleta)
@@ -1757,11 +1883,17 @@ def _fonte_estruturada(
         cache.obter_vencido(estado_cache, nome, consulta_cache) if usar_cache else (None, None)
     )
     if vencidas:
-        registrar(
-            f"  {nome}: sem resposta agora — usando cache de "
-            f"{cache.descrever_idade(idade)} ({len(vencidas)} anúncio(s))"
-        )
-        return [VagaEncontrada.model_validate(d) for d in vencidas]
+        try:
+            validadas = [VagaEncontrada.model_validate(d) for d in vencidas]
+        except (TypeError, ValidationError):
+            cache.remover(estado_cache, nome, consulta_cache)
+            registrar(f"  {nome}: cache vencido incompatível descartado")
+        else:
+            registrar(
+                f"  {nome}: sem resposta agora — usando cache de "
+                f"{cache.descrever_idade(idade)} ({len(validadas)} anúncio(s))"
+            )
+            return validadas
 
     registrar(f"  {nome}: sem resultados (ou credencial não configurada)")
     return []
@@ -1783,7 +1915,7 @@ def _texto_livre_com_cache(
     """
     if usar_cache:
         guardado, idade = cache.obter(estado_cache, nome, consulta_cache)
-        if guardado:
+        if isinstance(guardado, dict) and isinstance(guardado.get("texto"), str):
             registrar(
                 f"  {nome}: {len(guardado.get('fontes', []))} resultado(s) — cache de "
                 f"{cache.descrever_idade(idade)}"
@@ -1803,7 +1935,11 @@ def _texto_livre_com_cache(
 
     if usar_cache:
         vencido, idade = cache.obter_vencido(estado_cache, nome, consulta_cache)
-        if vencido and vencido.get("texto"):
+        if (
+            isinstance(vencido, dict)
+            and isinstance(vencido.get("texto"), str)
+            and vencido.get("texto")
+        ):
             registrar(
                 f"  {nome}: sem resposta agora — usando cache de "
                 f"{cache.descrever_idade(idade)} ({len(vencido.get('fontes', []))} resultado(s))"
@@ -1944,6 +2080,8 @@ achados com links.
             )
             texto_livre = texto_da_resposta(descoberta)
             fontes = _fontes_grounding(descoberta)
+            if not texto_livre.strip():
+                raise RuntimeError("Google Search respondeu sem conteúdo textual")
             cache.registrar_sucesso(estado_cache, "Google Search")
             registrar(f"  Google Search: {len(fontes)} fonte(s) citada(s)")
             # O grounding não passa pelo cache (só o fallback DDGS passa) e devolve
@@ -1953,13 +2091,18 @@ achados com links.
                 "grounding", pedido, texto_livre, {"fontes": fontes, "modelo": MODELO_BUSCA}
             )
         except Exception as e:  # noqa: BLE001
-            abriu = cache.registrar_falha(estado_cache, "Google Search")
+            transitorio = _e_transitorio(e)
+            abriu = (
+                cache.registrar_falha(estado_cache, "Google Search")
+                if transitorio else False
+            )
             sufixo = (
                 f" — {cache.FALHAS_PARA_ABRIR} falhas seguidas, pulando a fonte por "
                 f"{cache.HORAS_CIRCUITO_ABERTO} h"
                 if abriu else ""
             )
-            registrar(f"  Google Search: indisponível ({_resumo_erro(e)}){sufixo}")
+            classe = "indisponível" if transitorio else "erro definitivo"
+            registrar(f"  Google Search: {classe} ({_resumo_erro(e)}){sufixo}")
 
     # Também cai no fallback quando o grounding responde vazio, não só quando falha.
     if not texto_livre.strip():

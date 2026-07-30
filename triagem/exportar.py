@@ -20,6 +20,11 @@ def _seguro_para_planilha(valor):
     return valor
 
 
+def _md_inline(valor) -> str:
+    """Mantém dado de terceiros dentro da célula/linha Markdown atual."""
+    return " ".join(str(valor or "").replace("|", r"\|").splitlines())
+
+
 def exportar(resultados: List[VagaPontuada], caminho: str) -> None:
     destino = Path(caminho)
     ext = destino.suffix.lower()
@@ -46,24 +51,27 @@ def _markdown(resultados: List[VagaPontuada]) -> str:
     for i, vaga in enumerate(aprovadas, start=1):
         a = vaga.analise
         n = a.notas
+        empresa = _md_inline(a.empresa or "?")
+        titulo = _md_inline(a.titulo_normalizado)
         linhas += [
-            f"## #{i} — {a.empresa or '?'} — {a.titulo_normalizado} ({vaga.score_final:.0f}/100)",
+            f"## #{i} — {empresa} — {titulo} ({vaga.score_final:.0f}/100)",
             "",
-            f"- **ID:** `{vaga.id}` | **Regime:** {ROTULOS_REGIME[a.regime]} ({a.localizacao or '?'}) | "
-            f"**Nível:** {ROTULOS_NIVEL[a.nivel_real]} | **Idioma:** {a.idioma_trabalho} | **Origem:** {a.origem}",
-            f"- **Link:** {a.link or '(não informado)'}",
-            f"- **Stack exigida:** {', '.join(a.stack_exigida) or '—'}",
-            f"- **Stack desejável:** {', '.join(a.stack_desejavel) or '—'}",
+            f"- **ID:** `{_md_inline(vaga.id)}` | **Regime:** {ROTULOS_REGIME[a.regime]} "
+            f"({_md_inline(a.localizacao or '?')}) | **Nível:** {ROTULOS_NIVEL[a.nivel_real]} | "
+            f"**Idioma:** {_md_inline(a.idioma_trabalho)} | **Origem:** {_md_inline(a.origem)}",
+            f"- **Link:** {_md_inline(a.link or '(não informado)')}",
+            f"- **Stack exigida:** {_md_inline(', '.join(a.stack_exigida) or '—')}",
+            f"- **Stack desejável:** {_md_inline(', '.join(a.stack_desejavel) or '—')}",
             "",
             "| Dimensão | Nota | Justificativa |",
             "|---|---|---|",
-            f"| Crescimento (30%) | {n.d1_crescimento.nota}/10 | {n.d1_crescimento.justificativa} |",
-            f"| Regime/Loc (25%) | {n.d2_regime_localizacao.nota}/10 | {n.d2_regime_localizacao.justificativa} |",
-            f"| Stack fit (20%) | {n.d3_stack_fit.nota}/10 | {n.d3_stack_fit.justificativa} |",
-            f"| Inglês (15%) | {n.d4_ingles.nota}/10 | {n.d4_ingles.justificativa} |",
-            f"| Nível real (10%) | {n.d5_nivel_real.nota}/10 | {n.d5_nivel_real.justificativa} |",
+            f"| Crescimento (30%) | {n.d1_crescimento.nota}/10 | {_md_inline(n.d1_crescimento.justificativa)} |",
+            f"| Regime/Loc (25%) | {n.d2_regime_localizacao.nota}/10 | {_md_inline(n.d2_regime_localizacao.justificativa)} |",
+            f"| Stack fit (20%) | {n.d3_stack_fit.nota}/10 | {_md_inline(n.d3_stack_fit.justificativa)} |",
+            f"| Inglês (15%) | {n.d4_ingles.nota}/10 | {_md_inline(n.d4_ingles.justificativa)} |",
+            f"| Nível real (10%) | {n.d5_nivel_real.nota}/10 | {_md_inline(n.d5_nivel_real.justificativa)} |",
             "",
-            f"**⚠ Alertas:** {'; '.join(a.alertas) if a.alertas else 'nenhum'}",
+            f"**⚠ Alertas:** {_md_inline('; '.join(a.alertas) if a.alertas else 'nenhum')}",
             "",
         ]
 
@@ -72,8 +80,9 @@ def _markdown(resultados: List[VagaPontuada]) -> str:
         for vaga in descartadas:
             a = vaga.analise
             linhas.append(
-                f"- `{vaga.id}` {a.empresa or '?'} — {a.titulo_normalizado} — "
-                f"{a.motivo_descarte or 'motivo não informado'}"
+                f"- `{_md_inline(vaga.id)}` {_md_inline(a.empresa or '?')} — "
+                f"{_md_inline(a.titulo_normalizado)} — "
+                f"{_md_inline(a.motivo_descarte or 'motivo não informado')}"
             )
         linhas.append("")
 

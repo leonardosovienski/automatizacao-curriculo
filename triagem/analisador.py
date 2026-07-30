@@ -29,7 +29,7 @@ MODELOS = {
 }
 MODELO_PADRAO = "lite"
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 # Schemas e prompts não mudam durante a execução: gerar/ler a cada vaga é I/O e
 # CPU puro desperdício, e pesa mais ainda com --paralelo.
@@ -65,25 +65,44 @@ def texto_da_resposta(response) -> str:
 
 
 def _e_transitorio(erro: Exception) -> bool:
+    for objeto in (erro, getattr(erro, "response", None)):
+        codigo = getattr(objeto, "status_code", None) or getattr(objeto, "code", None)
+        try:
+            if int(codigo) in (429, 500, 502, 503, 504):
+                return True
+        except (TypeError, ValueError):
+            pass
     mensagem = f"{type(erro).__name__} {erro}".lower()
     return any(codigo in mensagem for codigo in CODIGOS_TRANSITORIOS)
 
 
-def gerar_com_retentativa(client: genai.Client, **kwargs):
+def _espera_da_api(erro: Exception, tentativa: int) -> float:
+    resposta = getattr(erro, "response", None)
+    headers = getattr(resposta, "headers", {}) or {}
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        if retry_after is not None:
+            return min(120.0, max(0.0, float(retry_after)))
+    except (TypeError, ValueError):
+        pass
+    return min(30.0, 2**tentativa + random.uniform(0, 0.5))
+
+
+def gerar_com_retentativa(client: genai.Client, tentativas: int = TENTATIVAS, **kwargs):
     """`generate_content` com backoff exponencial para 429/5xx.
 
     O free tier do Gemini estoura cota por minuto com facilidade quando o CLI roda
     com `--paralelo`; sem backoff a vaga era simplesmente perdida.
     """
     ultimo: Exception | None = None
-    for tentativa in range(TENTATIVAS):
+    for tentativa in range(tentativas):
         try:
             return client.models.generate_content(**kwargs)
         except Exception as e:  # noqa: BLE001 — reavaliado por _e_transitorio
             ultimo = e
-            if tentativa == TENTATIVAS - 1 or not _e_transitorio(e):
+            if tentativa == tentativas - 1 or not _e_transitorio(e):
                 raise
-            time.sleep(2**tentativa + random.uniform(0, 0.5))
+            time.sleep(_espera_da_api(e, tentativa))
     raise ultimo  # pragma: no cover — inalcançável, o laço sempre retorna ou levanta
 
 
@@ -126,10 +145,14 @@ def _bloco_autoritativo(texto_vaga: str) -> str:
 
 
 def analisar_vaga(
-    client: genai.Client, texto_vaga: str, modelo: str = MODELO_PADRAO
+    client: genai.Client,
+    texto_vaga: str,
+    modelo: str = MODELO_PADRAO,
+    tentativas: int = TENTATIVAS,
 ) -> AnaliseVaga:
     response = gerar_com_retentativa(
         client,
+        tentativas=tentativas,
         model=MODELOS[modelo],
         contents=f"{_bloco_autoritativo(texto_vaga)}Analise esta vaga:\n\n{texto_vaga}",
         config=types.GenerateContentConfig(

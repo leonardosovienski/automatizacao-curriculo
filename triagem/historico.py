@@ -11,17 +11,11 @@ from typing import Dict
 
 from .schema import VagaPontuada
 
-ARQUIVO = Path(
-    os.environ.get(
-        "TRIAGEM_HISTORICO",
-        Path(__file__).resolve().parent.parent / "historico.json",
-    )
-)
+PADRAO = Path.cwd() / "historico.json"
+ARQUIVO = Path(os.environ.get("TRIAGEM_HISTORICO") or PADRAO)
 
 STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
-
-PADRAO = Path(__file__).resolve().parent.parent / "historico.json"
-
+PIPELINE_VERSION = 2
 
 def aplicar_config_do_ambiente() -> None:
     """Re-resolve o caminho do histórico depois que o .env foi carregado.
@@ -105,7 +99,7 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
     anterior = hist.get(vaga.id, {})
     if vaga.score_final is None:
         status = "descartada"
-    elif anterior.get("status") in ("aplicado", "entrevista", "recusado"):
+    elif anterior.get("status") in ("aplicado", "entrevista", "recusado", "fechada"):
         status = anterior["status"]
     else:
         status = "novo"
@@ -113,6 +107,7 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
         "analisado_em": datetime.now().isoformat(timespec="seconds"),
         "status": status,
         "score_final": vaga.score_final,
+        "pipeline_version": PIPELINE_VERSION,
         "texto": texto,
         "analise": vaga.analise.model_dump(),
     }

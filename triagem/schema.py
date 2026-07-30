@@ -48,8 +48,9 @@ class AnaliseVaga(BaseModel):
     stack_exigida: List[str]
     stack_desejavel: List[str]
     idioma_trabalho: Literal["pt", "en", "misto"]
-    link: str
-    origem: Literal["gupy", "indeed", "linkedin", "outro"]
+    link: str = Field(pattern=r"^(?:https?://.*)?$")
+    origem: str
+    publicada_em: str = ""
     descartada: bool
     motivo_descarte: Optional[str]
     notas: Optional[Notas]  # null quando descartada
