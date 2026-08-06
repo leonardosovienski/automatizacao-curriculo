@@ -1,0 +1,58 @@
+version: 2
+
+updates:
+  # Dependências Python declaradas no pyproject.toml e requirements.txt
+  - package-ecosystem: "pip"
+    directory: "/"
+
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Sao_Paulo"
+
+    open-pull-requests-limit: 5
+
+    groups:
+      python-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+    pull-request-branch-name:
+      separator: "/"
+
+  # Actions utilizadas em .github/workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:30"
+      timezone: "America/Sao_Paulo"
+
+    open-pull-requests-limit: 3
+
+    groups:
+      actions-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+    pull-request-branch-name:
+      separator: "/"
