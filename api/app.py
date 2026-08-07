@@ -48,8 +48,13 @@ class VagaResumo(BaseModel):
     id: str
     empresa: str
     titulo: str
-    status: str
+    status: historico.StatusVaga
     score_final: Optional[float]
+    # regime/nivel_real/idioma_trabalho ficam como `str` (não Literal) de propósito:
+    # embora triagem.schema.AnaliseVaga os tipe como Literal na análise, aqui eles vêm
+    # de historico.json em disco, que pode ter registros de pipelines antigos/legados
+    # sem esses campos. Apertar para Literal faria a API devolver 500 nesses casos em
+    # vez da degradação graciosa atual (string vazia + fallback de label no frontend).
     regime: str
     localizacao: str
     nivel_real: str

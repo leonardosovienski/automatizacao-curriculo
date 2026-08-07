@@ -50,11 +50,17 @@ export default function App() {
   const [ordenacao, setOrdenacao] = useState<Ordenacao>("score_desc");
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
+  const [statsErro, setStatsErro] = useState(false);
   const [atualizandoId, setAtualizandoId] = useState<string | null>(null);
   const [ajudaAberta, setAjudaAberta] = useState(false);
 
   useEffect(() => {
-    obterStats().catch(() => undefined).then((s) => s && setStats(s));
+    obterStats()
+      .then((s) => {
+        setStats(s);
+        setStatsErro(false);
+      })
+      .catch(() => setStatsErro(true));
   }, [vagas]);
 
   useEffect(() => {
@@ -132,7 +138,7 @@ export default function App() {
 
       <main className="mx-auto max-w-3xl px-4 py-6">
         <div className="mb-6">
-          <StatsBar stats={stats} />
+          <StatsBar stats={stats} erro={statsErro} />
         </div>
 
         <div className="mb-4 flex flex-wrap gap-2">
