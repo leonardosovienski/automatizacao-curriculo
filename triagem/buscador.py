@@ -393,6 +393,17 @@ def _param_de_rastreio(chave: str) -> bool:
     return baixa in PARAMS_RASTREIO or baixa.startswith(PREFIXOS_RASTREIO)
 
 
+def _dominio_e(host: str, dominio: str) -> bool:
+    """True só se `host` for exatamente `dominio` ou um subdomínio seu.
+
+    Checagem por substring (`dominio in host`) também casa hosts maliciosos
+    como "evil-linkedin.com.attacker.net" ou "notlinkedin.com" — aqui exige-se
+    igualdade ou sufixo `.dominio`, como já é feito para HOSTS_NAO_CANONICOS.
+    """
+    host = (host or "").lower().removeprefix("www.")
+    return host == dominio or host.endswith(f".{dominio}")
+
+
 def _limpar_url(url: str) -> str:
     """Remove parâmetros de rastreio preservando os que identificam o anúncio."""
     partes = urlsplit((url or "").strip())
@@ -573,7 +584,7 @@ def _host_canonico(url: str) -> bool:
     if any(host == ruim or host.endswith(f".{ruim}") for ruim in HOSTS_NAO_CANONICOS):
         return False
     # No LinkedIn o anúncio vive em /jobs/; /feed/update/... é um post sobre a vaga.
-    if "linkedin.com" in host and "/jobs/" not in partes.path:
+    if _dominio_e(host, "linkedin.com") and "/jobs/" not in partes.path:
         return False
     return True
 
@@ -676,7 +687,7 @@ def _localizacao_compativel(vaga: VagaEncontrada) -> bool:
         return True
     if _contem_termo(conteudo, CIDADES_ACEITAS):
         return True
-    if "linkedin.com" in host and not host.startswith("br."):
+    if _dominio_e(host, "linkedin.com") and not host.startswith("br."):
         return aceita_br
     if any(portal in host for portal in PORTAIS_INTERNACIONAIS):
         return aceita_br
@@ -1142,7 +1153,7 @@ def _inspecionar_link(vaga: VagaEncontrada) -> Inspecao:
     original = urlsplit(link)
     url_final = _limpar_url(str(response.url))
     final = urlsplit(url_final)
-    if "linkedin.com" in original.netloc and "/jobs/view/" in original.path:
+    if _dominio_e(original.netloc, "linkedin.com") and "/jobs/view/" in original.path:
         if "/jobs/view/" not in final.path:
             return Inspecao(ativo=False)
     try:
