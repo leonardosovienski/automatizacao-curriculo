@@ -194,7 +194,19 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     const link = firstJobCard(page).getByRole('link', { name: 'Vaga original' });
     const href = await link.getAttribute('href');
 
-    if (href?.includes('example.com')) {
+    // Comparação por substring (`href.includes('example.com')`) também
+    // casaria hosts como "example.com.attacker.net" ou "notexample.com" —
+    // aqui exige-se igualdade exata ou sufixo ".example.com" no hostname.
+    let hostname: string | null = null;
+    try {
+      hostname = href ? new URL(href).hostname : null;
+    } catch {
+      hostname = null;
+    }
+    const isExampleFixture =
+      hostname === 'example.com' || hostname?.endsWith('.example.com');
+
+    if (isExampleFixture) {
       test.info().annotations.push({
         type: 'warning',
         description:
