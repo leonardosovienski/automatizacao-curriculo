@@ -67,23 +67,32 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
         </button>
 
         <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
-          <select
-            value={vaga.status}
-            disabled={atualizando || vaga.status === "descartada"}
-            onChange={(e) =>
-              onStatusChange(vaga.id, e.target.value as Status)
-            }
-            className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-text disabled:opacity-50"
-          >
-            {vaga.status === "descartada" && (
-              <option value="descartada">{STATUS_LABEL.descartada}</option>
+          <div className="relative">
+            <select
+              value={vaga.status}
+              disabled={atualizando || vaga.status === "descartada"}
+              onChange={(e) =>
+                onStatusChange(vaga.id, e.target.value as Status)
+              }
+              aria-label={`Status da vaga ${vaga.titulo}`}
+              className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-text disabled:opacity-50"
+            >
+              {vaga.status === "descartada" && (
+                <option value="descartada">{STATUS_LABEL.descartada}</option>
+              )}
+              {STATUS_EDITAVEIS.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
+            {atualizando && (
+              <span
+                className="pointer-events-none absolute -right-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin rounded-full border-2 border-accent border-t-transparent"
+                aria-hidden
+              />
             )}
-            {STATUS_EDITAVEIS.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABEL[s]}
-              </option>
-            ))}
-          </select>
+          </div>
           {vaga.link && (
             <a
               href={vaga.link}
