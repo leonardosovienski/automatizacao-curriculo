@@ -38,7 +38,7 @@ triagem = ["prompts/*.md"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "--cov=triagem --cov-branch --cov-fail-under=75"
+addopts = "--cov=triagem --cov=api --cov-branch --cov-fail-under=75"
 
 [tool.ruff]
 line-length = 100
