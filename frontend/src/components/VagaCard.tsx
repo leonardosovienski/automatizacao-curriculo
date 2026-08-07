@@ -1,3 +1,4 @@
+import { AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import {
   DIMENSAO_LABEL,
@@ -10,6 +11,7 @@ import {
 } from "../types";
 import { Chip } from "./Chip";
 import { ScoreRing } from "./ScoreRing";
+import { Spinner } from "./Spinner";
 
 interface Props {
   vaga: VagaResumo;
@@ -57,12 +59,11 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
             </div>
           </div>
           {temDetalhes && (
-            <span
+            <ChevronDown
+              size={16}
               className={`shrink-0 text-muted transition-transform ${aberto ? "rotate-180" : ""}`}
               aria-hidden
-            >
-              ▾
-            </span>
+            />
           )}
         </button>
 
@@ -87,10 +88,9 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
               ))}
             </select>
             {atualizando && (
-              <span
-                className="pointer-events-none absolute -right-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin rounded-full border-2 border-accent border-t-transparent"
-                aria-hidden
-              />
+              <span className="pointer-events-none absolute -right-5 top-1/2 -translate-y-1/2">
+                <Spinner size={14} />
+              </span>
             )}
           </div>
           {vaga.link && (
@@ -98,9 +98,9 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
               href={vaga.link}
               target="_blank"
               rel="noreferrer"
-              className="text-sm text-accent hover:underline"
+              className="inline-flex items-center gap-1 text-sm text-accent hover:underline"
             >
-              Vaga original ↗
+              Vaga original <ExternalLink size={13} />
             </a>
           )}
         </div>
@@ -161,9 +161,12 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
           )}
 
           {vaga.alertas.length > 0 && (
-            <ul className="space-y-1 text-sm text-warn">
+            <ul className="space-y-1.5 text-sm text-warn">
               {vaga.alertas.map((a, i) => (
-                <li key={i}>⚠ {a}</li>
+                <li key={i} className="flex items-start gap-1.5">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                  <span>{a}</span>
+                </li>
               ))}
             </ul>
           )}

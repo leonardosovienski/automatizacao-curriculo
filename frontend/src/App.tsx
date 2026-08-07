@@ -1,6 +1,8 @@
+import { CheckCircle2, HelpCircle, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { atualizarStatus, listarVagas, obterStats } from "./api";
 import { CardSkeleton } from "./components/CardSkeleton";
+import { Modal } from "./components/Modal";
 import { StatsBar } from "./components/StatsBar";
 import { Toast } from "./components/Toast";
 import { VagaCard } from "./components/VagaCard";
@@ -49,6 +51,7 @@ export default function App() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [atualizandoId, setAtualizandoId] = useState<string | null>(null);
+  const [ajudaAberta, setAjudaAberta] = useState(false);
 
   useEffect(() => {
     obterStats().catch(() => undefined).then((s) => s && setStats(s));
@@ -109,22 +112,21 @@ export default function App() {
       <header className="border-b border-border bg-surface/60">
         <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-4">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent/15 text-accent">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <CheckCircle2 size={18} />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-lg font-semibold text-text">Triagem de Vagas</h1>
             <p className="text-xs text-muted">
               Scoring automático com Google Gemini
             </p>
           </div>
+          <button
+            onClick={() => setAjudaAberta(true)}
+            aria-label="Como popular o histórico"
+            className="p-1.5 text-muted transition-colors hover:text-text"
+          >
+            <HelpCircle size={20} />
+          </button>
         </div>
       </header>
 
@@ -151,28 +153,11 @@ export default function App() {
 
         <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative flex-1">
-            <svg
+            <Search
+              size={16}
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
               aria-hidden
-            >
-              <circle
-                cx="11"
-                cy="11"
-                r="7"
-                stroke="currentColor"
-                strokeWidth="2"
-              />
-              <path
-                d="M21 21l-3.5-3.5"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
+            />
             <input
               type="search"
               value={busca}
@@ -236,6 +221,26 @@ export default function App() {
       </main>
 
       {erro && <Toast message={erro} onDismiss={() => setErro(null)} />}
+
+      <Modal
+        title="Como popular o histórico"
+        open={ajudaAberta}
+        onClose={() => setAjudaAberta(false)}
+      >
+        <div className="space-y-3 text-sm text-muted">
+          <p>
+            Esta tela só lê o <code className="rounded bg-bg px-1.5 py-0.5 text-text">historico.json</code> gerado pela CLI. Para popular ou atualizar vagas, rode no terminal:
+          </p>
+          <div className="space-y-2 rounded-md bg-bg p-3 font-mono text-xs text-text">
+            <p>triar buscar --limite 10</p>
+            <p>triar analisar vagas.json</p>
+          </div>
+          <p>
+            Trocar o status aqui (Aplicado, Entrevista, ...) grava direto no mesmo
+            arquivo usado pela CLI — os dois podem ser usados juntos com segurança.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }
