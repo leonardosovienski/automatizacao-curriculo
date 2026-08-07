@@ -7,14 +7,17 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Literal, get_args
 
 from .schema import VagaPontuada
 
 PADRAO = Path.cwd() / "historico.json"
 ARQUIVO = Path(os.environ.get("TRIAGEM_HISTORICO") or PADRAO)
 
-STATUS_VALIDOS = ["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
+# Fonte única do enum de status — StatusVaga é reusado pela API (api/app.py) para
+# tipar VagaResumo.status, em vez de duplicar a lista de valores válidos lá.
+StatusVaga = Literal["novo", "aplicado", "entrevista", "recusado", "descartada", "fechada"]
+STATUS_VALIDOS = list(get_args(StatusVaga))
 PIPELINE_VERSION = 2
 
 def aplicar_config_do_ambiente() -> None:
