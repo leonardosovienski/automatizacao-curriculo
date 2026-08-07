@@ -2,10 +2,17 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  fullyParallel: true,
+  // O fixture (tests/e2e/fixtures/historico.seed.json) tem uma única vaga
+  // "viva" (a outra é descartada) — a maioria dos testes muta o status
+  // dela via PATCH real na API. Rodar em paralelo faz dois testes de
+  // status colidirem no mesmo registro (last-write-wins), derrubando
+  // asserções de forma não-determinística. Até o fixture ganhar um
+  // registro isolado por teste, workers=1 é o jeito correto de garantir
+  // que a suíte não seja flaky — velocidade cede para correção aqui.
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  workers: 1,
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
