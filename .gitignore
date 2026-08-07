@@ -8,6 +8,10 @@ venv/
 htmlcov/
 historico.json
 historico.json.bak
+historico.json.lock
+# Historico isolado usado pelo E2E (Playwright) — ver api/seed_e2e.py
+.e2e-historico.json
+.e2e-historico.json.lock
 .cache_busca.json
 alvos_ats.json
 # Payloads brutos para replay determinístico: dados de execução, não código.
