@@ -1,3 +1,5 @@
+import { X } from "lucide-react";
+
 interface Props {
   message: string;
   variant?: "error" | "success";
@@ -21,7 +23,7 @@ export function Toast({ message, variant = "error", onDismiss }: Props) {
         className="shrink-0 text-current opacity-70 hover:opacity-100"
         aria-label="Fechar"
       >
-        ✕
+        <X size={16} />
       </button>
     </div>
   );

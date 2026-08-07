@@ -1,3 +1,4 @@
+import { AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import {
   DIMENSAO_LABEL,
@@ -10,6 +11,7 @@ import {
 } from "../types";
 import { Chip } from "./Chip";
 import { ScoreRing } from "./ScoreRing";
+import { Spinner } from "./Spinner";
 
 interface Props {
   vaga: VagaResumo;
@@ -57,41 +59,48 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
             </div>
           </div>
           {temDetalhes && (
-            <span
+            <ChevronDown
+              size={16}
               className={`shrink-0 text-muted transition-transform ${aberto ? "rotate-180" : ""}`}
               aria-hidden
-            >
-              ▾
-            </span>
+            />
           )}
         </button>
 
         <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
-          <select
-            value={vaga.status}
-            disabled={atualizando || vaga.status === "descartada"}
-            onChange={(e) =>
-              onStatusChange(vaga.id, e.target.value as Status)
-            }
-            className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-text disabled:opacity-50"
-          >
-            {vaga.status === "descartada" && (
-              <option value="descartada">{STATUS_LABEL.descartada}</option>
+          <div className="relative">
+            <select
+              value={vaga.status}
+              disabled={atualizando || vaga.status === "descartada"}
+              onChange={(e) =>
+                onStatusChange(vaga.id, e.target.value as Status)
+              }
+              aria-label={`Status da vaga ${vaga.titulo}`}
+              className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-text disabled:opacity-50"
+            >
+              {vaga.status === "descartada" && (
+                <option value="descartada">{STATUS_LABEL.descartada}</option>
+              )}
+              {STATUS_EDITAVEIS.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
+            {atualizando && (
+              <span className="pointer-events-none absolute -right-5 top-1/2 -translate-y-1/2">
+                <Spinner size={14} />
+              </span>
             )}
-            {STATUS_EDITAVEIS.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABEL[s]}
-              </option>
-            ))}
-          </select>
+          </div>
           {vaga.link && (
             <a
               href={vaga.link}
               target="_blank"
               rel="noreferrer"
-              className="text-sm text-accent hover:underline"
+              className="inline-flex items-center gap-1 text-sm text-accent hover:underline"
             >
-              Vaga original ↗
+              Vaga original <ExternalLink size={13} />
             </a>
           )}
         </div>
@@ -152,9 +161,12 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
           )}
 
           {vaga.alertas.length > 0 && (
-            <ul className="space-y-1 text-sm text-warn">
+            <ul className="space-y-1.5 text-sm text-warn">
               {vaga.alertas.map((a, i) => (
-                <li key={i}>⚠ {a}</li>
+                <li key={i} className="flex items-start gap-1.5">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                  <span>{a}</span>
+                </li>
               ))}
             </ul>
           )}

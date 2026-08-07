@@ -5,6 +5,7 @@ verdade, incluindo o lock de arquivo usado pela CLI, para que `triar` e a API
 possam ser usados ao mesmo tempo sem corromper o `historico.json`.
 """
 
+import os
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -21,9 +22,16 @@ historico.aplicar_config_do_ambiente()
 
 app = FastAPI(title="Triagem de Vagas API", version="1.0.0")
 
+_ORIGENS_PADRAO = "http://localhost:5173,http://127.0.0.1:5173"
+_origens = [
+    o.strip()
+    for o in os.environ.get("TRIAGEM_CORS_ORIGINS", _ORIGENS_PADRAO).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_origens,
     allow_methods=["GET", "PATCH"],
     allow_headers=["*"],
 )
