@@ -5,7 +5,7 @@ verdade, incluindo o lock de arquivo usado pela CLI, para que `triar` e a API
 possam ser usados ao mesmo tempo sem corromper o `historico.json`.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -31,6 +31,11 @@ app.add_middleware(
 LOCK = FileLock(str(historico.ARQUIVO) + ".lock")
 
 
+class DimensaoResumo(BaseModel):
+    nota: int
+    justificativa: str
+
+
 class VagaResumo(BaseModel):
     id: str
     empresa: str
@@ -40,8 +45,14 @@ class VagaResumo(BaseModel):
     regime: str
     localizacao: str
     nivel_real: str
+    idioma_trabalho: str
     analisado_em: str
     link: Optional[str] = None
+    stack_exigida: List[str] = []
+    stack_desejavel: List[str] = []
+    alertas: List[str] = []
+    motivo_descarte: Optional[str] = None
+    notas: Optional[Dict[str, DimensaoResumo]] = None
 
 
 class AtualizarStatusPayload(BaseModel):
@@ -50,6 +61,7 @@ class AtualizarStatusPayload(BaseModel):
 
 def _para_resumo(vid: str, entrada: dict) -> VagaResumo:
     analise = entrada.get("analise") or {}
+    notas_raw = analise.get("notas") or None
     return VagaResumo(
         id=vid,
         empresa=analise.get("empresa", "?"),
@@ -59,14 +71,30 @@ def _para_resumo(vid: str, entrada: dict) -> VagaResumo:
         regime=analise.get("regime", "indefinido"),
         localizacao=analise.get("localizacao", ""),
         nivel_real=analise.get("nivel_real", ""),
+        idioma_trabalho=analise.get("idioma_trabalho", ""),
         analisado_em=entrada.get("analisado_em", ""),
         link=analise.get("link"),
+        stack_exigida=analise.get("stack_exigida", []),
+        stack_desejavel=analise.get("stack_desejavel", []),
+        alertas=analise.get("alertas", []),
+        motivo_descarte=analise.get("motivo_descarte"),
+        notas=notas_raw,
     )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/stats")
+def estatisticas():
+    hist = historico.carregar()
+    contagem = {s: 0 for s in historico.STATUS_VALIDOS}
+    for entrada in hist.values():
+        status = entrada.get("status", "novo")
+        contagem[status] = contagem.get(status, 0) + 1
+    return {"total": len(hist), "por_status": contagem}
 
 
 @app.get("/api/vagas", response_model=List[VagaResumo])
