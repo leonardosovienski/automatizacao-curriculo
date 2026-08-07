@@ -26,14 +26,32 @@ export default defineConfig({
     navigationTimeout: 15_000,
   },
 
+  // Dois servidores: a API sobe isolada de qualquer historico.json real do
+  // usuário, populada a partir de um fixture estático (ver api/seed_e2e.py e
+  // tests/e2e/fixtures/historico.seed.json) — sem chamadas ao Gemini durante
+  // o E2E. E2E_SKIP_WEBSERVER=1 pula os dois (útil se já estiverem no ar).
   webServer: process.env.E2E_SKIP_WEBSERVER
     ? undefined
-    : {
-        command: 'npm run dev -- --host 127.0.0.1',
-        url: 'http://127.0.0.1:5173',
-        reuseExistingServer: !process.env.CI,
-        timeout: 120_000,
-      },
+    : [
+        {
+          command: `${process.env.E2E_PYTHON ?? 'python'} api/seed_e2e.py`,
+          cwd: '..',
+          env: {
+            TRIAGEM_HISTORICO: '.e2e-historico.json',
+            E2E_API_PORT: '8000',
+          },
+          url: 'http://127.0.0.1:8000/health',
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+        },
+        {
+          command: 'npm run dev -- --host 127.0.0.1',
+          env: { VITE_API_URL: process.env.VITE_API_URL ?? 'http://127.0.0.1:8000' },
+          url: 'http://127.0.0.1:5173',
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
+      ],
 
   projects: [
     {

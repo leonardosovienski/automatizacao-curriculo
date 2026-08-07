@@ -5,6 +5,11 @@ filtros, busca, ordenação, expansão de vaga, troca/persistência de status, o
 ajuda, rota inexistente, ausência de erros de console/JS/HTTP 5xx, acessibilidade (Axe) e
 responsividade — em desktop e mobile.
 
+**A suíte é auto-contida**: o Playwright sobe API e Vite sozinho, com um
+`historico.json` isolado e populado a partir de um fixture estático (ver
+`api/seed_e2e.py` e `tests/e2e/fixtures/historico.seed.json`) — não toca no
+`historico.json` real do usuário nem faz chamadas ao Gemini.
+
 ## 1. Instalar dependências
 
 Na raiz do `frontend/` (dependências já estão em `package.json`):
@@ -14,11 +19,10 @@ npm install
 npx playwright install chromium
 ```
 
-## 2. Rodar
+O projeto Python (`pip install -e ".[dev]"`, na raiz do repo) precisa estar instalado —
+é ele que sobe a API durante o teste.
 
-A API (`uvicorn api.app:app --port 8000`) precisa estar rodando e o `historico.json`
-precisa ter pelo menos uma vaga (`triar analisar`/`triar buscar`) — a suíte lê o estado
-real da aplicação, não usa fixtures/mocks. O Vite é subido automaticamente pelo Playwright.
+## 2. Rodar
 
 ```powershell
 npm run test:e2e
@@ -54,10 +58,14 @@ npx playwright show-trace test-results\<pasta-do-teste>\trace.zip
 ## 4. Observações
 
 - A suíte tenta restaurar o status original das vagas depois de alguns testes
-  (best-effort), mas roda contra o `historico.json` real — evite rodar em paralelo com
-  uso manual da CLI/UI.
-- `E2E_SKIP_WEBSERVER=1` pula o auto-start do Vite (útil se ele já estiver rodando).
-- `E2E_BASE_URL` sobrescreve a URL base (padrão `http://127.0.0.1:5173`).
+  (best-effort), mas isso é sobre o `.e2e-historico.json` isolado — nunca toca no
+  `historico.json` real.
+- `E2E_SKIP_WEBSERVER=1` pula o auto-start de API e Vite (útil se ambos já estiverem
+  no ar — nesse caso a API precisa apontar para o mesmo `historico.json` que os testes
+  esperam).
+- `E2E_BASE_URL` sobrescreve a URL base do front (padrão `http://127.0.0.1:5173`).
+- `E2E_PYTHON` sobrescreve o binário Python usado para subir a API (padrão `python`;
+  em alguns sistemas Linux/Mac pode ser necessário `python3`).
 
 ## 5. CI
 

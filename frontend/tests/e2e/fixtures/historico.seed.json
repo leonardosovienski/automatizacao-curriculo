@@ -1,0 +1,80 @@
+{
+    "f6faf36b7a": {
+        "analisado_em": "2026-08-07T23:02:20",
+        "status": "novo",
+        "score_final": 95.0,
+        "pipeline_version": 2,
+        "texto": "Vaga: Platform Engineer Intern\nEmpresa: GlobalSoft\nLocal: Remoto (Brasil)\nDescri\u00e7\u00e3o: Est\u00e1gio em Platform Engineering. Backstage, Kubernetes, GitHub Actions, Python. Time distribu\u00eddo, documenta\u00e7\u00e3o e dailies em ingl\u00eas. Link: https://example.com/vaga/abc",
+        "analise": {
+            "titulo_normalizado": "Platform Engineer Intern",
+            "empresa": "GlobalSoft",
+            "regime": "remoto",
+            "localizacao": "Brasil",
+            "nivel_real": "estagio",
+            "stack_exigida": [
+                "Backstage",
+                "Kubernetes",
+                "GitHub Actions",
+                "Python"
+            ],
+            "stack_desejavel": [],
+            "idioma_trabalho": "en",
+            "link": "https://example.com/vaga/abc",
+            "origem": "outro",
+            "publicada_em": "",
+            "descartada": false,
+            "motivo_descarte": null,
+            "notas": {
+                "d1_crescimento": {
+                    "nota": 9,
+                    "justificativa": "Stack altamente relevante para o mercado atual e oportunidade de atua\u00e7\u00e3o em time distribu\u00eddo."
+                },
+                "d2_regime_localizacao": {
+                    "nota": 10,
+                    "justificativa": "Vaga remota com abrang\u00eancia nacional, condizente com a localiza\u00e7\u00e3o do candidato."
+                },
+                "d3_stack_fit": {
+                    "nota": 9,
+                    "justificativa": "Excelente match com Backstage, GitHub Actions e Python, centrais no perfil do candidato."
+                },
+                "d4_ingles": {
+                    "nota": 10,
+                    "justificativa": "Uso di\u00e1rio exigido para documenta\u00e7\u00e3o e dailies, ideal para o n\u00edvel de flu\u00eancia do candidato."
+                },
+                "d5_nivel_real": {
+                    "nota": 10,
+                    "justificativa": "O n\u00edvel de est\u00e1gio est\u00e1 claramente definido e condizente com as atribui\u00e7\u00f5es esperadas."
+                }
+            },
+            "alertas": []
+        }
+    },
+    "d51c4d0c13": {
+        "analisado_em": "2026-08-07T23:02:20",
+        "status": "descartada",
+        "score_final": null,
+        "pipeline_version": 2,
+        "texto": "Vaga: Desenvolvedor Java S\u00eanior\nEmpresa: ConsultCo\nLocal: Presencial em Florian\u00f3polis/SC\nDescri\u00e7\u00e3o: 5+ anos de experi\u00eancia em Java, Spring Boot e microsservi\u00e7os. Link: https://example.com/vaga/def",
+        "analise": {
+            "titulo_normalizado": "Desenvolvedor Java S\u00eanior",
+            "empresa": "ConsultCo",
+            "regime": "presencial",
+            "localizacao": "Florian\u00f3polis/SC",
+            "nivel_real": "senior",
+            "stack_exigida": [
+                "Java",
+                "Spring Boot",
+                "microsservi\u00e7os"
+            ],
+            "stack_desejavel": [],
+            "idioma_trabalho": "pt",
+            "link": "https://example.com/vaga/def",
+            "origem": "outro",
+            "publicada_em": "",
+            "descartada": true,
+            "motivo_descarte": "Regime presencial fora de Curitiba ou Arauc\u00e1ria e n\u00edvel s\u00eanior incompat\u00edvel com o perfil.",
+            "notas": null,
+            "alertas": []
+        }
+    }
+}
