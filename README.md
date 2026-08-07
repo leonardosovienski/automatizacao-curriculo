@@ -300,6 +300,14 @@ estado de "não sei", então o modelo era obrigado a chutar para não estourar
 descrição de cada dimensão no prompt corresponda à dimensão que o schema realmente tem, e
 outro que a nota do `indefinido` citada no prompt bata com `D2_POR_REGIME`.
 
+## Interface web (opcional)
+
+Além da CLI, o histórico pode ser navegado por uma interface web: `api/app.py`
+expõe o `historico.json` via FastAPI (leitura + atualização de status) e
+`frontend/` é um cliente React/Vite/Tailwind para essa API. Ver
+`frontend/README.md` para instruções de execução. É opcional — a CLI
+continua sendo a única forma de rodar `buscar`/`analisar`/`cv`.
+
 ## Estrutura
 
 | Arquivo | Responsabilidade |
