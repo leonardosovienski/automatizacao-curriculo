@@ -29,6 +29,34 @@ updates:
     pull-request-branch-name:
       separator: "/"
 
+  # Dependências JS/TS do frontend (frontend/package.json)
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:15"
+      timezone: "America/Sao_Paulo"
+
+    open-pull-requests-limit: 5
+
+    groups:
+      frontend-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+    pull-request-branch-name:
+      separator: "/"
+
   # Actions utilizadas em .github/workflows
   - package-ecosystem: "github-actions"
     directory: "/"
