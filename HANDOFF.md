@@ -32,6 +32,11 @@ detalhes fora do lugar.
   aos registros já aceitos no lote, e a URL perdedora continua preservada como alias.
   Os veredictos opostos não vieram de não determinismo do modelo: os textos de origem eram
   recortes diferentes; só o segundo continha explicitamente `5+ years`.
+- **Alias reconhecido não era necessariamente salvo.** O run `31247664139` mostrou a
+  deduplicação correta no terminal e no relatório, mas o artefato continuou sem aliases.
+  Faltava marcar o histórico como alterado quando não havia reanálise; quando havia
+  recálculo, `historico.registrar()` sobrescrevia aliases existentes. As duas perdas foram
+  corrigidas e derrubadas por mutação em testes separados.
 
 Além disso, **seis dos 42 testes E2E passavam com a funcionalidade quebrada** — incluindo
 um sem asserção nenhuma e uma regex (`/^(\d{1,3})\b/` sobre `"95Platform…"`) que fazia o
@@ -53,7 +58,7 @@ bug — teste verde não é evidência até você tentar derrubá-lo.
 - Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
   transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
 - O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
-- CI executa Ruff, compileall e **352 testes** (cobertura de branches ≥ 75%, hoje 82.7%),
+- CI executa Ruff, compileall e **354 testes** (cobertura de branches ≥ 75%, hoje 83.08%),
   lint+build do frontend e a suíte E2E Playwright como gate obrigatório de merge.
 
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de

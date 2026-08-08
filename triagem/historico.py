@@ -122,7 +122,7 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
         status = anterior["status"]
     else:
         status = "novo"
-    hist[vaga.id] = {
+    atualizada = {
         "analisado_em": datetime.now().isoformat(timespec="seconds"),
         "status": status,
         "score_final": vaga.score_final,
@@ -130,6 +130,9 @@ def registrar(hist: Dict[str, dict], vaga: VagaPontuada, texto: str) -> None:
         "texto": texto,
         "analise": vaga.analise.model_dump(),
     }
+    if anterior.get("aliases"):
+        atualizada["aliases"] = list(anterior["aliases"])
+    hist[vaga.id] = atualizada
 
 
 def buscar(hist: Dict[str, dict], prefixo: str) -> str:
