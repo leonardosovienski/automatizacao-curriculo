@@ -55,12 +55,22 @@ export default function App() {
   const [ajudaAberta, setAjudaAberta] = useState(false);
 
   useEffect(() => {
+    // Mesma guarda do efeito de vagas abaixo: sem ela, uma resposta lenta de
+    // /api/stats pode chegar depois de uma troca de status e sobrescrever o
+    // dashboard com números já vencidos.
+    let cancelado = false;
     obterStats()
       .then((s) => {
+        if (cancelado) return;
         setStats(s);
         setStatsErro(false);
       })
-      .catch(() => setStatsErro(true));
+      .catch(() => {
+        if (!cancelado) setStatsErro(true);
+      });
+    return () => {
+      cancelado = true;
+    };
   }, [vagas]);
 
   useEffect(() => {
