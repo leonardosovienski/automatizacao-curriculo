@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from functools import lru_cache
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -404,6 +404,19 @@ def _dominio_e(host: str, dominio: str) -> bool:
     return host == dominio or host.endswith(f".{dominio}")
 
 
+def _host_em(host: str, dominios: Iterable[str]) -> bool:
+    """True se `host` for um dos domínios, ou subdomínio de um deles.
+
+    Existe porque `_dominio_e` só compara com um domínio, e a checagem contra
+    uma LISTA acabou reimplementada à mão em cinco pontos deste arquivo. Duas
+    dessas cópias usavam `portal in host`, que é substring: `catho.com.br`
+    casava dentro de `catho.com.br.attacker.net`, e o host hostil era tratado
+    como portal brasileiro em `_localizacao_compativel` — entrando na análise
+    paga. Com um único helper, o idioma seguro passa a ser o único idioma.
+    """
+    return any(_dominio_e(host, dominio) for dominio in dominios)
+
+
 def _limpar_url(url: str) -> str:
     """Remove parâmetros de rastreio preservando os que identificam o anúncio."""
     partes = urlsplit((url or "").strip())
@@ -438,8 +451,7 @@ PADRAO_CAMINHO_ANUNCIO = re.compile(
 
 
 def _e_encurtador(host: str) -> bool:
-    limpo = (host or "").lower().removeprefix("www.")
-    return any(limpo == alvo or limpo.endswith(f".{alvo}") for alvo in HOSTS_NAO_CANONICOS)
+    return _host_em(host, HOSTS_NAO_CANONICOS)
 
 
 # Último segmento que é só a palavra-marcador, sem identificador nenhum: é a página
@@ -581,7 +593,7 @@ def _host_canonico(url: str) -> bool:
     partes = urlsplit(url or "")
     host = partes.netloc.lower()
     host = host[4:] if host.startswith("www.") else host
-    if any(host == ruim or host.endswith(f".{ruim}") for ruim in HOSTS_NAO_CANONICOS):
+    if _host_em(host, HOSTS_NAO_CANONICOS):
         return False
     # No LinkedIn o anúncio vive em /jobs/; /feed/update/... é um post sobre a vaga.
     if _dominio_e(host, "linkedin.com") and "/jobs/" not in partes.path:
@@ -683,13 +695,13 @@ def _localizacao_compativel(vaga: VagaEncontrada) -> bool:
     aceita_br = _contem_termo(conteudo, TERMOS_INTERNACIONAL_ACEITO)
     if _restricao_de_residencia(conteudo):
         return aceita_br
-    if host.endswith(".br") or any(portal in host for portal in PORTAIS_BRASILEIROS):
+    if host.endswith(".br") or _host_em(host, PORTAIS_BRASILEIROS):
         return True
     if _contem_termo(conteudo, CIDADES_ACEITAS):
         return True
     if _dominio_e(host, "linkedin.com") and not host.startswith("br."):
         return aceita_br
-    if any(portal in host for portal in PORTAIS_INTERNACIONAIS):
+    if _host_em(host, PORTAIS_INTERNACIONAIS):
         return aceita_br
     # Domínio corporativo estrangeiro não está numa lista de portais. Se anuncia
     # remoto, precisa provar que aceita Brasil/LATAM/global como qualquer outro.
@@ -744,8 +756,7 @@ MAX_SALTOS_ROUTER = 4
 
 
 def _e_router_de_redirect(url: str) -> bool:
-    host = urlsplit(url or "").netloc.lower().removeprefix("www.")
-    return any(host == alvo or host.endswith(f".{alvo}") for alvo in HOSTS_ROUTER_DE_REDIRECT)
+    return _host_em(urlsplit(url or "").netloc, HOSTS_ROUTER_DE_REDIRECT)
 
 
 def _resolver_router(url: str) -> str:
@@ -844,9 +855,8 @@ def _empresa_do_jsonld_confiavel(nome: str, host: str) -> bool:
     # "AvePoint" é a confirmação mais forte que existe, e a regra anterior
     # reprovava justamente os casos mais confiáveis.
     limpo = (host or "").lower().removeprefix("www.")
-    e_agregador = any(
-        limpo == portal or limpo.endswith(f".{portal}")
-        for portal in PORTAIS_BRASILEIROS + PORTAIS_INTERNACIONAIS + HOSTS_NAO_CANONICOS
+    e_agregador = _host_em(
+        limpo, PORTAIS_BRASILEIROS + PORTAIS_INTERNACIONAIS + HOSTS_NAO_CANONICOS
     )
     if not e_agregador:
         return True
