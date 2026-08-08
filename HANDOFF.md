@@ -1,9 +1,32 @@
 # Estado do projeto
 
+## Situação atual — pronto na `main`
+
+Em 2026-08-08, os PRs [#36](https://github.com/leonardosovienski/automatizacao-curriculo/pull/36)
+e [#37](https://github.com/leonardosovienski/automatizacao-curriculo/pull/37) foram
+incorporados à `main`. O estado validado é o commit `cc06320`; não há branches de trabalho
+remanescentes nem bloqueios técnicos conhecidos.
+
+Validação final executada sobre a própria `main`:
+
+- 354/354 testes Python aprovados, com 83,08% de cobertura;
+- Ruff, `compileall` e `pip check` aprovados;
+- auditoria npm sem vulnerabilidades, lint e build de produção aprovados;
+- 42/42 testes Playwright aprovados em desktop e mobile;
+- CI pós-merge aprovado em Python 3.10, 3.12 e 3.13;
+- Dependency Review e CodeQL aprovados;
+- pipeline real manual aprovado, incluindo busca, triagem, persistência do histórico e
+  publicação de artefatos.
+
+Os registros duplicados anteriores às correções continuam sendo dados legados. Eles não
+impedem o uso e não são removidos automaticamente, para preservar status e alterações
+manuais. O código atual impede novas duplicatas equivalentes e persiste suas URLs como
+aliases.
+
 ## Revisão independente de 2026-08-08
 
 Revisão feita do zero, sem assumir nada do estado anterior, seguida da **primeira execução
-do pipeline com dados reais**. Cinco defeitos encontrados e corrigidos. Nenhum deles teria
+do pipeline com dados reais**. Os defeitos encontrados foram corrigidos. Nenhum deles teria
 surgido de escrever mais teste — vieram de ler código, rodar o sistema e reparar em
 detalhes fora do lugar.
 

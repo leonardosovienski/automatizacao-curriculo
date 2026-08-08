@@ -33,7 +33,8 @@ de atualizar o status diretamente na UI — a mudança é gravada no mesmo
 - `npm run test:e2e:ui` / `:headed` / `:debug` — variações interativas
 - `npm run test:e2e:report` — abre o último relatório HTML
 
-A suíte E2E é **auto-contida**: sobe API e Vite sozinha, com um `historico.json`
+A suíte E2E possui **42 testes em desktop e mobile** e é **auto-contida**: sobe API e Vite
+sozinha, com um `historico.json`
 isolado populado de um fixture estático — não toca no seu histórico real nem
 chama o Gemini. Ver [PLAYWRIGHT-SETUP.md](PLAYWRIGHT-SETUP.md).
 

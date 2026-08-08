@@ -9,6 +9,13 @@ de CV sob medida para cada vaga.
 > **Retomando o projeto?** O estado atual, as decisões de arquitetura e as pendências
 > estão em [HANDOFF.md](HANDOFF.md).
 
+> **Estado em 2026-08-08:** revisão concluída e incorporada à `main` no commit
+> `cc06320` pelos PRs [#36](https://github.com/leonardosovienski/automatizacao-curriculo/pull/36)
+> e [#37](https://github.com/leonardosovienski/automatizacao-curriculo/pull/37). A validação
+> pós-merge passou com 354 testes Python, 83,08% de cobertura, 42 testes E2E, build do
+> frontend, auditoria de dependências, CodeQL e pipeline real. Não há bloqueio técnico
+> conhecido; `main` é a única branch ativa.
+
 ## Como funciona
 
 ```
