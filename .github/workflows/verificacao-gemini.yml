@@ -40,12 +40,16 @@ permissions:
   contents: read
 
 env:
-  # O código lê estes nomes; os secrets foram cadastrados com outros.
-  # O mapeamento fica aqui para não exigir renomear nada no repositório.
-  GEMINI_API_KEY: ${{ secrets.APIKEYGEMINI }}
-  JOOBLE_API_KEY: ${{ secrets.JOOBLEAPIKEY }}
-  ADZUNA_APP_ID: ${{ secrets.APPLICATIONIDADZUNA }}
-  ADZUNA_API_KEY: ${{ secrets.APPLICATIONKEYSADZUNA }}
+  # O código lê GEMINI_API_KEY, JOOBLE_API_KEY, ADZUNA_APP_ID e ADZUNA_API_KEY.
+  # Cada um aceita duas grafias de secret: a compacta já cadastrada no
+  # repositório e a canônica idêntica ao nome da variável. Um secret inexistente
+  # resolve para string vazia sem erro, então `!= '' && A || B` escolhe a que
+  # existir — e a ausência de qualquer uma das duas deixa de ser um valor vazio
+  # silencioso que parece falha da API.
+  GEMINI_API_KEY: ${{ secrets.APIKEYGEMINI != '' && secrets.APIKEYGEMINI || secrets.GEMINI_API_KEY }}
+  JOOBLE_API_KEY: ${{ secrets.JOOBLEAPIKEY != '' && secrets.JOOBLEAPIKEY || secrets.JOOBLE_API_KEY }}
+  ADZUNA_APP_ID: ${{ secrets.APPLICATIONIDADZUNA != '' && secrets.APPLICATIONIDADZUNA || secrets.ADZUNA_APP_ID }}
+  ADZUNA_API_KEY: ${{ secrets.APPLICATIONKEYSADZUNA != '' && secrets.APPLICATIONKEYSADZUNA || secrets.ADZUNA_API_KEY }}
 
 jobs:
   # ---------------------------------------------------------------- analisar
@@ -94,12 +98,34 @@ jobs:
       - run: python -m pip install -e .
 
       - name: Relatar quais credenciais de fonte estão presentes
+        env:
+          # Qual das duas grafias existe. Sem isto o log dizia só "ausente" e não
+          # separava "secret com nome errado" de "secret salvo vazio" — foi
+          # exatamente onde a Jooble travou por duas execuções seguidas.
+          TEM_JOOBLE_CURTO: ${{ secrets.JOOBLEAPIKEY != '' }}
+          TEM_JOOBLE_LONGO: ${{ secrets.JOOBLE_API_KEY != '' }}
+          TEM_ADZUNA_ID_CURTO: ${{ secrets.APPLICATIONIDADZUNA != '' }}
+          TEM_ADZUNA_ID_LONGO: ${{ secrets.ADZUNA_APP_ID != '' }}
+          TEM_ADZUNA_KEY_CURTO: ${{ secrets.APPLICATIONKEYSADZUNA != '' }}
+          TEM_ADZUNA_KEY_LONGO: ${{ secrets.ADZUNA_API_KEY != '' }}
         run: |
           # Só presença, nunca valor — serve para distinguir "credencial ausente"
           # de "API mudou", que é a confusão mais cara de diagnosticar aqui.
-          for nome in JOOBLE_API_KEY ADZUNA_APP_ID ADZUNA_API_KEY; do
-            if [ -n "${!nome}" ]; then echo "$nome: presente"; else echo "$nome: AUSENTE"; fi
-          done
+          relatar() {
+            local var="$1" curto="$2" longo="$3" tem_curto="$4" tem_longo="$5"
+            if [ -n "${!var}" ]; then
+              local origem="$longo"
+              [ "$tem_curto" = "true" ] && origem="$curto"
+              echo "$var: presente (via secret '$origem')"
+            else
+              echo "$var: AUSENTE — nenhum dos secrets '$curto' ou '$longo' tem valor."
+              echo "  Confira a grafia exata e se foi salvo em Repository secrets"
+              echo "  (Environment secrets não chegam a jobs sem 'environment:')."
+            fi
+          }
+          relatar JOOBLE_API_KEY JOOBLEAPIKEY JOOBLE_API_KEY "$TEM_JOOBLE_CURTO" "$TEM_JOOBLE_LONGO"
+          relatar ADZUNA_APP_ID APPLICATIONIDADZUNA ADZUNA_APP_ID "$TEM_ADZUNA_ID_CURTO" "$TEM_ADZUNA_ID_LONGO"
+          relatar ADZUNA_API_KEY APPLICATIONKEYSADZUNA ADZUNA_API_KEY "$TEM_ADZUNA_KEY_CURTO" "$TEM_ADZUNA_KEY_LONGO"
 
       # Uma chamada barata ao Gemini + um toque em cada fonte. Falha só se
       # NENHUMA fonte responder; fonte individual fora do ar vira log, não erro.
