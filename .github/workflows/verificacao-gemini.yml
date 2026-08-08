@@ -1,0 +1,187 @@
+# Execução do pipeline real contra as APIs de verdade (Gemini, Jooble, Adzuna).
+#
+# Existe por dois motivos:
+#
+# 1. Verificação de contrato. A suíte cobre a orquestração com clientes falsos,
+#    o que valida retry, paralelismo e persistência — mas não se o structured
+#    output do Gemini ainda casa com o schema AnaliseVaga, nem se o formato de
+#    resposta da Jooble/Adzuna mudou. Se um SDK mudar, o pytest segue verde e o
+#    problema só aparece em uso real.
+#
+# 2. Uso real. Os Repository secrets são o único lugar onde as credenciais já
+#    vivem sem sair de um cofre, e o Actions é quem as enxerga.
+#
+# Sempre manual: cada execução gasta chamadas pagas.
+#
+# ATENÇÃO — este repositório é público, e logs e artefatos de repositório
+# público são visíveis para qualquer pessoa. As vagas encontradas, os scores e
+# as justificativas ficam expostos. O CV nunca é impresso e seus blocos
+# <!-- PRIVADO --> são removidos antes de qualquer chamada à API, mas se a
+# exposição dos resultados passar a incomodar, torne o repositório privado.
+name: Pipeline real (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      escopo:
+        description: O que executar
+        type: choice
+        default: analisar
+        options:
+          - analisar   # lote de exemplo, determinístico e barato (2 chamadas)
+          - fontes     # só health check de Jooble/Adzuna/Google Search
+          - buscar     # busca real na web + triagem completa
+          - tudo
+      limite:
+        description: "Máximo de vagas na busca (só vale para escopo=buscar/tudo)"
+        default: "5"
+
+permissions:
+  contents: read
+
+env:
+  # O código lê estes nomes; os secrets foram cadastrados com outros.
+  # O mapeamento fica aqui para não exigir renomear nada no repositório.
+  GEMINI_API_KEY: ${{ secrets.APIKEYGEMINI }}
+  JOOBLE_API_KEY: ${{ secrets.JOOBLEAPIKEY }}
+  ADZUNA_APP_ID: ${{ secrets.APPLICATIONIDADZUNA }}
+  ADZUNA_API_KEY: ${{ secrets.APPLICATIONKEYSADZUNA }}
+
+jobs:
+  # ---------------------------------------------------------------- analisar
+  analisar:
+    if: ${{ inputs.escopo == 'analisar' || inputs.escopo == 'tudo' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+
+      - name: Confirmar que a chave chegou ao runner
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::O secret APIKEYGEMINI está vazio ou não existe."
+            exit 1
+          fi
+          echo "Chave presente (${#GEMINI_API_KEY} caracteres). Valor nunca é impresso."
+
+      # Sem cache de histórico de propósito: este job existe para exercitar a
+      # API de verdade a cada execução. Com histórico restaurado ele pularia
+      # tudo por dedup e não verificaria contrato nenhum.
+      - name: Analisar o lote de exemplo com a API real
+        run: python triar.py analisar exemplos/vagas_exemplo.txt
+
+      - name: Conferir que o resultado foi persistido
+        run: python triar.py historico
+
+  # ----------------------------------------------------------------- fontes
+  fontes:
+    if: ${{ inputs.escopo == 'fontes' || inputs.escopo == 'tudo' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+
+      - name: Relatar quais credenciais de fonte estão presentes
+        run: |
+          # Só presença, nunca valor — serve para distinguir "credencial ausente"
+          # de "API mudou", que é a confusão mais cara de diagnosticar aqui.
+          for nome in JOOBLE_API_KEY ADZUNA_APP_ID ADZUNA_API_KEY; do
+            if [ -n "${!nome}" ]; then echo "$nome: presente"; else echo "$nome: AUSENTE"; fi
+          done
+
+      # Uma chamada barata ao Gemini + um toque em cada fonte. Falha só se
+      # NENHUMA fonte responder; fonte individual fora do ar vira log, não erro.
+      - name: Checar a saúde das fontes
+        run: python triar.py buscar --testar-fontes
+
+  # ----------------------------------------------------------------- buscar
+  buscar:
+    if: ${{ inputs.escopo == 'buscar' || inputs.escopo == 'tudo' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+
+      # Sem isto cada execução recomeça com histórico vazio e re-analisa (e
+      # re-paga) vagas já vistas. Restaurar o histórico faz a dedup funcionar
+      # entre execuções, que é o comportamento pretendido do projeto.
+      - name: Restaurar histórico de execuções anteriores
+        uses: actions/cache/restore@v4
+        with:
+          path: historico.json
+          key: historico-buscar-${{ github.run_id }}
+          restore-keys: historico-buscar-
+
+      - name: Preparar o CV base
+        env:
+          CV_BASE: ${{ secrets.CVBASE }}
+        run: |
+          mkdir -p perfil
+          if [ -n "$CV_BASE" ]; then
+            # Escrito via variável para o conteúdo não aparecer no log.
+            printf '%s' "$CV_BASE" > perfil/cv_base.md
+            echo "CV base carregado do secret CVBASE."
+          else
+            cp perfil/cv_base.exemplo.md perfil/cv_base.md
+            echo "::warning::Secret CVBASE ausente — usando perfil/cv_base.exemplo.md."
+            echo "Os resultados refletem o CV de exemplo, não o seu perfil real."
+          fi
+          # Blocos <!-- PRIVADO --> são removidos por curriculo.py antes de
+          # qualquer chamada à API; o arquivo em si nunca é impresso nem publicado.
+
+      - name: Buscar vagas reais e triar
+        env:
+          # Via env, não interpolado direto no `run`: `${{ inputs.limite }}` no
+          # corpo do script é substituído antes do shell rodar, então um valor
+          # como `5; comando` seria executado. O env passa como dado.
+          LIMITE: ${{ inputs.limite }}
+        run: |
+          set +e
+          python triar.py buscar --limite "$LIMITE" --saida relatorio.md
+          codigo=$?
+          set -e
+          case "$codigo" in
+            0) echo "Concluído sem falhas." ;;
+            2) echo "::warning::Concluído, mas com vaga(s) não analisadas — ver o log acima." ;;
+            *) echo "::error::Busca falhou (código $codigo)."; exit "$codigo" ;;
+          esac
+
+      - name: Listar o histórico resultante
+        if: ${{ !cancelled() }}
+        run: python triar.py historico
+
+      - name: Guardar o histórico para a próxima execução
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: historico.json
+          key: historico-buscar-${{ github.run_id }}
+
+      - name: Publicar relatório e histórico
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: resultado-busca
+          path: |
+            relatorio.md
+            historico.json
+          retention-days: 14
+          if-no-files-found: warn
