@@ -271,7 +271,8 @@ python triar.py status a1b2c3d4e5 aplicado # novo | aplicado | entrevista | recu
 python triar.py cv a1b2c3d4e5 --saida candidatura.md
 ```
 
-Gera, a partir do seu [perfil/cv_base.md](perfil/cv_base.md) e do texto da vaga: fit em 3
+Gera, a partir do seu `perfil/cv_base.md` (formato em
+[perfil/cv_base.exemplo.md](perfil/cv_base.exemplo.md)) e do texto da vaga: fit em 3
 bullets, bullets de CV reescritos com o vocabulário da vaga (ATS-friendly), gaps e como
 mitigar, mensagem de candidatura pronta (em inglês quando a vaga é em inglês) e
 palavras-chave ATS cobertas/faltantes.
@@ -284,8 +285,8 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São 292 testes sem chamadas reais à API, com cobertura de branches mínima de 75% no CI.
-Cobrem parse do input, regra fixa do D2, score composto,
+São **348 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
+(hoje em 80.5%). Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
 internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de
@@ -300,13 +301,57 @@ estado de "não sei", então o modelo era obrigado a chutar para não estourar
 descrição de cada dimensão no prompt corresponda à dimensão que o schema realmente tem, e
 outro que a nota do `indefinido` citada no prompt bata com `D2_POR_REGIME`.
 
+### Testes de ponta a ponta (frontend)
+
+```powershell
+cd frontend
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+42 testes Playwright em desktop e mobile, **gate obrigatório no CI**. A suíte é
+auto-contida: sobe API e Vite sozinha com um `historico.json` isolado, populado de um
+fixture estático — não toca no seu histórico real nem chama o Gemini. Detalhes em
+[frontend/PLAYWRIGHT-SETUP.md](frontend/PLAYWRIGHT-SETUP.md).
+
+### Verificação contra as APIs reais
+
+A suíte inteira roda com dublês, o que valida a orquestração mas **não o contrato** com o
+`google-genai`, a Jooble ou a Adzuna. Para fechar essa lacuna existe o workflow manual
+**"Pipeline real (manual)"** (`.github/workflows/verificacao-gemini.yml`), disparado pela
+aba *Actions* — é o único lugar onde as credenciais já vivem sem sair de um cofre:
+
+| Escopo | O que faz | Custo |
+|---|---|---|
+| `analisar` | lote de exemplo, determinístico | 2 chamadas |
+| `fontes` | health check de Jooble/Adzuna/Google Search | 1 chamada |
+| `buscar` | busca real na web + triagem, `--limite` configurável | proporcional |
+| `tudo` | os três | — |
+
+Sempre manual, porque cada execução gasta chamadas pagas. O job `buscar` guarda o
+`historico.json` em cache entre execuções, então a dedup funciona e vagas já vistas não são
+re-analisadas. Os secrets aceitam duas grafias cada (a compacta e a canônica); o passo de
+diagnóstico informa **qual credencial chegou e por qual nome**, que é o que separa
+"credencial ausente" de "API mudou".
+
+> ⚠ Em repositório **público**, logs e artefatos do Actions são visíveis a qualquer pessoa
+> — inclusive as vagas, scores e justificativas do escopo `buscar`. O CV nunca é impresso e
+> seus blocos `<!-- PRIVADO -->` são removidos antes da API, mas se a exposição dos
+> resultados incomodar, torne o repositório privado.
+
 ## Interface web (opcional)
 
-Além da CLI, o histórico pode ser navegado por uma interface web: `api/app.py`
-expõe o `historico.json` via FastAPI (leitura + atualização de status) e
-`frontend/` é um cliente React/Vite/Tailwind para essa API. Ver
-`frontend/README.md` para instruções de execução. É opcional — a CLI
-continua sendo a única forma de rodar `buscar`/`analisar`/`cv`.
+Além da CLI, o histórico pode ser navegado por uma interface web: `api/app.py` expõe o
+`historico.json` via FastAPI (leitura + atualização de status) e `frontend/` é um cliente
+React/Vite/Tailwind para essa API. Ver [frontend/README.md](frontend/README.md) para
+instruções. É opcional — a CLI continua sendo a única forma de rodar
+`buscar`/`analisar`/`cv`.
+
+**A API e a CLI compartilham o mesmo lock de arquivo** (`historico.caminho_lock()`), então
+usar as duas ao mesmo tempo não perde escrita. Um `historico.json` ilegível vira **503** com
+a mensagem de erro e a dica do `.bak`, não um 500 sem corpo. O `PATCH` devolve 409 quando o
+lock está ocupado por outro processo.
 
 ## Estrutura
 
@@ -331,7 +376,16 @@ continua sendo a única forma de rodar `buscar`/`analisar`/`cv`.
 | `triagem/prompts/cv_prompt.md` | Regras do gerador de material de candidatura |
 | `perfil/cv_base.md` | CV base real (fonte de verdade do gerador; gitignorado — dados pessoais) |
 | `perfil/cv_base.exemplo.md` | Template versionável do CV base |
+| `api/app.py` | API REST fina sobre o histórico (FastAPI, leitura + status) |
+| `api/seed_e2e.py` | Sobe a API com histórico isolado para a suíte E2E |
+| `frontend/` | Cliente React/TypeScript/Vite/Tailwind da API |
+| `frontend/tests/e2e/` | Suíte Playwright (desktop + mobile), gate do CI |
 | `tests/test_pipeline.py` | Testes do pipeline sem API |
 | `tests/test_dedup.py` | Testes da cascata de deduplicação |
 | `tests/test_ats.py` | Testes dos conectores de ATS (nenhum toca a rede) |
+| `tests/test_cli.py` | Comandos da CLI e orquestração do `analisar` (cliente falso) |
+| `tests/test_api.py` | Testes da API REST |
+| `tests/test_readiness.py` | Checagens de prontidão do pacote |
+| `.github/workflows/ci.yml` | Testes 3.10/3.12/3.13, lint+build do frontend, E2E |
+| `.github/workflows/verificacao-gemini.yml` | Pipeline real contra as APIs (manual) |
 | `migrar_historico.py` | Migração de execução única: limpa o histórico legado |

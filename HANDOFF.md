@@ -1,5 +1,39 @@
 # Estado do projeto
 
+## Revisão independente de 2026-08-08
+
+Revisão feita do zero, sem assumir nada do estado anterior, seguida da **primeira execução
+do pipeline com dados reais**. Cinco defeitos encontrados e corrigidos. Nenhum deles teria
+surgido de escrever mais teste — vieram de ler código, rodar o sistema e reparar em
+detalhes fora do lugar.
+
+- **Lock divergente entre CLI e API** (#29). `cli.py` travava `historico.lock` e
+  `api/app.py` travava `historico.json.lock`, porque `with_suffix()` **substitui** a
+  extensão em vez de acrescentar. Os dois lados nunca se excluíam: um PATCH da interface web
+  concorrente com `triar analisar` tinha o status sobrescrito, sem erro nenhum. Agora
+  `historico.caminho_lock()` é fonte única, com teste que falha se os caminhos divergirem.
+- **Histórico ilegível virava 500 cru na API** (#29). Agora **503** com a mensagem e a dica
+  do `.bak`; o 400 fica reservado para status inválido.
+- **Dedup cega a ponto em sufixo societário** (#32). `"ltda."` não casava com `"ltda"` —
+  a SKA entrou duas vezes no histórico, com duas análises pagas. Atingia quase toda forma
+  abreviada (`S.A.`, `S/A`, `Inc.`, `Corp.`, `Cia.`). Ver a seção de dedup abaixo.
+- **`limpar-cache` anunciava "0 removida(s)" enquanto removia** (#32). `cache.carregar()`
+  já podava antes do `podar()` do comando; agora existe `carregar(podar_automaticamente=…)`
+  e quem conta é quem remove.
+- **Substring de host em `_localizacao_compativel`** (#33). `catho.com.br` casava dentro de
+  `catho.com.br.attacker.net` — host hostil tratado como portal brasileiro, entrando na
+  análise paga. Não era SSRF (`_host_e_seguro` segue barrando destino interno), mas custava
+  chamada. O padrão seguro estava reimplementado à mão em **seis** lugares e duas cópias
+  erraram; hoje existe `_host_em()` e ele é usado nas seis.
+
+Além disso, **seis dos 42 testes E2E passavam com a funcionalidade quebrada** — incluindo
+um sem asserção nenhuma e uma regex (`/^(\d{1,3})\b/` sobre `"95Platform…"`) que fazia o
+teste de ordenação nunca executar suas asserções. Todos corrigidos e validados por mutação.
+
+**Prática adotada:** toda correção é verificada quebrando o código de propósito e
+confirmando que o teste fica vermelho. Em dois casos, um teste recém-escrito passava com o
+bug — teste verde não é evidência até você tentar derrubá-lo.
+
 ## Hardening da auditoria de 2026-07-30
 
 - Metadados da busca (`empresa`, `regime/localização`, `link`, `origem`, `publicada_em`)
@@ -12,7 +46,8 @@
 - Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
   transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
 - O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
-- CI executa Ruff, compileall e 292 testes com cobertura de branches mínima de 75%.
+- CI executa Ruff, compileall e **348 testes** (cobertura de branches ≥ 75%, hoje 80.5%),
+  lint+build do frontend e a suíte E2E Playwright como gate obrigatório de merge.
 
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de
 material de CV. Também busca vagas atuais na web a partir de um pedido em linguagem
@@ -140,6 +175,18 @@ distintas e duas análises pagas.
 fundida some sem aviso e nunca recebe candidatura; duplicata que escapa custa uma chamada de
 API e uma linha repetida. A perdedora nunca é descartada — vira alias com as duas URLs.
 
+**O ponto sai só de `empresa_canonica`, nunca do núcleo do cargo.** `_normalizar` preserva
+`.` de propósito, para `.net`, `node.js`, `c#` e `c++` sobreviverem em `nucleo_do_cargo` —
+mas o mesmo normalizador serve nome de empresa, e isso fazia `"ltda."` não casar com
+`SUFIXOS_SOCIETARIOS`. Ao mexer aqui, mantenha a assimetria: remover pontuação do cargo
+quebraria a identificação de stack.
+
+`SUFIXOS_COMPOSTOS` existe porque o filtro compara **token a token**: entradas de duas
+palavras no conjunto principal nunca casariam. `"do brasil"` está deliberadamente **fora**
+— ativá-lo faria `Volvo do Brasil` casar com `Volvo` (correto) mas também `Banco do Brasil`
+virar `banco`, fundindo com um empregador chamado só `Banco`. Não há regra estrutural que
+separe "nome + qualificador de país" de "nome próprio que contém o país".
+
 ## Segurança de credenciais
 
 - `.env` é gitignorado e nunca é lido pelo processo de análise.
@@ -227,6 +274,22 @@ Blocos entre `<!-- PRIVADO -->` e `<!-- /PRIVADO -->` no CV base são removidos 
 - O histórico do comando `buscar` passou a usar a URL canônica como chave. Entradas
   gravadas por versões anteriores continuam válidas, mas com IDs antigos.
 
+## Interface web e API
+
+`api/app.py` expõe o `historico.json` via FastAPI (leitura + mudança de status) e
+`frontend/` é um cliente React 19 / TypeScript / Vite / Tailwind v4. É opcional: a CLI
+continua sendo a única forma de rodar `buscar`/`analisar`/`cv`.
+
+- **A API compartilha o lock da CLI** por `historico.caminho_lock()`. Usar as duas ao mesmo
+  tempo não perde escrita; o `PATCH` devolve 409 quando o lock está ocupado.
+- Histórico ilegível vira **503** com a dica do `.bak`, não 500 sem corpo.
+- `VagaResumo.regime/nivel_real/idioma_trabalho` são `str` e **não** `Literal` de propósito:
+  vêm do disco, que pode ter registros de pipelines antigos. Apertar para `Literal` faria a
+  API devolver 500 nesses casos em vez da degradação graciosa atual.
+- CORS vem de `TRIAGEM_CORS_ORIGINS` e **não** usa `allow_credentials`.
+- **A API não tem autenticação** e o `PATCH` muda estado. Correto para localhost pessoal;
+  vira problema no dia em que a porta for exposta.
+
 ## Validação
 
 ```powershell
@@ -234,6 +297,21 @@ python -m pytest -q
 python -m ruff check .
 python -m compileall -q triagem triar.py
 python -m pip check
+
+cd frontend
+npm run lint && npm run build && npm run test:e2e
 ```
 
-O teste real da API depende de uma `GEMINI_API_KEY` válida.
+O teste real das APIs não depende de chave local: o workflow **"Pipeline real (manual)"**
+(`.github/workflows/verificacao-gemini.yml`) roda no Actions, onde as credenciais já vivem
+como Repository secrets. Escopos: `analisar` (2 chamadas), `fontes` (health check),
+`buscar` (busca real) e `tudo`. Sempre manual — cada execução gasta chamadas pagas.
+
+### Armadilhas de credencial que já custaram tempo
+
+- **Environment secrets ≠ Repository secrets.** Environment só chega a jobs que declaram
+  `environment:`. Foi o que segurou a Jooble por três execuções seguidas.
+- **Variável no shell local não alcança runner nem sessão em nuvem.**
+- Cada credencial aceita **duas grafias** de secret (a compacta e a canônica); o passo de
+  diagnóstico do workflow informa qual chegou e por qual nome — é o que separa "credencial
+  ausente" de "API mudou".

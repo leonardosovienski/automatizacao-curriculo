@@ -3,7 +3,80 @@
 Todas as mudanças relevantes deste projeto. O formato segue
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
-## [Não publicado] — validação com rede real
+## [Não publicado] — revisão independente e primeira busca com dados reais
+
+Revisão feita do zero em 2026-08-08, seguida da primeira execução do pipeline com dados
+reais. Cinco defeitos encontrados. **Nenhum deles teria surgido de escrever mais teste** —
+vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
+
+### Corrigido
+
+- **Lock divergente entre CLI e API — perda silenciosa de atualização.** `cli.py` travava
+  `historico.lock` e `api/app.py` travava `historico.json.lock`, porque `with_suffix()`
+  substitui a extensão em vez de acrescentar. Os dois lados nunca se excluíam: como ambos
+  fazem read-modify-write do dicionário inteiro, um PATCH da interface web concorrente com
+  `triar analisar` tinha o status sobrescrito, sem erro nenhum. O arquivo nunca corrompia
+  (`salvar()` é atômico) — a atualização é que sumia. Agora `historico.caminho_lock()` é
+  fonte única, com teste de regressão que falha se os caminhos divergirem.
+- **Histórico ilegível virava 500 cru em toda rota de leitura da API.** Agora **503** com a
+  mensagem e a dica do `.bak`. No `PATCH`, o erro de arquivo era capturado como 400,
+  sugerindo erro do cliente; hoje 400 fica reservado para status inválido.
+- **Deduplicação cega a ponto em sufixo societário.** `_normalizar` preserva `.` de
+  propósito, para `.net`/`node.js`/`c#`/`c++` sobreviverem em `nucleo_do_cargo` — mas o mesmo
+  normalizador servia nome de empresa, e `"ltda."` não casava com `"ltda"`. A SKA entrou
+  duas vezes no histórico, com **duas análises pagas**. Atingia quase toda forma abreviada
+  (`LTDA.`, `S.A.`, `S/A`, `Inc.`, `Corp.`, `Cia.`); só grafias sem pontuação funcionavam.
+  O ponto passa a sair em `empresa_canonica` e só ali. `"s a"` e `"do brasil"` eram entradas
+  de duas palavras num filtro token a token — código morto; `"s a"` virou
+  `SUFIXOS_COMPOSTOS` e `"do brasil"` ficou de fora de propósito (ativá-lo faria
+  `Banco do Brasil` virar `banco`).
+- **`triar limpar-cache` anunciava "0 entrada(s) removida(s)" enquanto removia.**
+  `cache.carregar()` já podava antes do `podar()` do comando, então quem contava não era
+  quem removia. `carregar()` ganhou `podar_automaticamente`.
+- **Checagem de host por substring em `_localizacao_compativel`.** `portal in host` fazia
+  `catho.com.br` casar dentro de `catho.com.br.attacker.net` — host hostil tratado como
+  portal brasileiro, entrando na análise paga. Não era SSRF (`_host_e_seguro` segue barrando
+  destino interno e `_obter` revalida cada salto), mas custava chamada. O padrão seguro
+  estava reimplementado à mão em seis pontos e duas cópias erraram: agora existe
+  `_host_em()`, usado nas seis.
+- **`analisar` não explicava a falha quando *todas* as vagas falhavam.** O retorno acontecia
+  antes do bloco que lista os motivos, deixando o modo de falha mais comum (chave inválida,
+  cota estourada) como o único sem diagnóstico.
+- **`useEffect` de `/api/stats` sem guarda de cancelamento** — resposta lenta podia
+  sobrescrever o dashboard com números vencidos.
+- **`actions/checkout@v4` no job `frontend`** enquanto os demais usavam `@v7`.
+
+### Testes
+
+- **Seis dos 42 testes E2E passavam com a funcionalidade quebrada**: um sem asserção
+  nenhuma, dois com tautologia (`toHaveValue(await inputValue())`), um com regex que casava
+  `"0 Aplicadas"`, um com `test.skip` sobre fixture determinístico, e — o mais grave —
+  `getVisibleScores` usando `/^(\d{1,3})\b/` sobre `"95Platform Engineer…"`, onde não há
+  fronteira de palavra entre `5` e `P`: a função devolvia sempre `[]` e as asserções de
+  ordenação, guardadas por `if (length >= 2)`, nunca chegaram a executar.
+- Novo `tests/test_cli.py`: nenhum `_cmd_*` era exercitado antes. Cobre `status`,
+  `historico` e `limpar-cache` pelo `main()` real, e a orquestração do `analisar` com
+  cliente falso — retry, paralelismo, dedup por histórico, redação da chave em mensagens de
+  erro e o *checkpoint* que impede um Ctrl+C no retry de descartar análises já pagas.
+- **Toda correção validada por mutação**: quebrar o código de propósito e confirmar que o
+  teste fica vermelho. Em dois casos, um teste recém-escrito passava com o bug.
+- 306 → **348 testes**; cobertura 76.33% → **80.57%**; `api/app.py` a 100%;
+  `triagem/cli.py` de 44% para 56%.
+
+### Adicionado
+
+- **Workflow "Pipeline real (manual)"** (`.github/workflows/verificacao-gemini.yml`). A
+  suíte roda com dublês, o que valida a orquestração mas não o **contrato** com o
+  `google-genai`, a Jooble ou a Adzuna. O workflow fecha essa lacuna no único lugar onde as
+  credenciais já vivem sem sair de um cofre: os Repository secrets. Escopos `analisar`,
+  `fontes`, `buscar` e `tudo`; sempre manual, porque cada execução gasta chamadas pagas.
+  O job `buscar` guarda o `historico.json` em cache entre execuções, para a dedup funcionar
+  e não re-pagar vagas já vistas.
+- Cada credencial aceita **duas grafias** de secret, e o passo de diagnóstico informa qual
+  chegou e por qual nome — o que separa "credencial ausente" de "API mudou". Foi ele que
+  identificou um secret criado em *Environment* em vez de *Repository*.
+
+## [Anterior] — validação com rede real
 
 Primeira execução do pipeline contra as quatro fontes de verdade, em 2026-07-27. Toda a
 validação anterior tinha rodado com dublês, por falta de credenciais. Das 4 vagas aprovadas
