@@ -202,11 +202,18 @@ def _cache_lido(ambiente):
 
 
 def test_limpar_cache_remove_entrada_vencida(ambiente, monkeypatch, capsys):
+    """A contagem exibida precisa bater com o que saiu do arquivo.
+
+    O teste anterior só checava o efeito (entrada sumiu) e por isso passava com
+    a mensagem errada: `cache.carregar()` já podava, então o `podar()` seguinte
+    não achava mais nada e o comando anunciava "0 entrada(s) removida(s)"
+    enquanto removia uma.
+    """
     _cache_com(ambiente, "2020-01-01T00:00:00")
     assert _rodar(monkeypatch, "limpar-cache") == 0
 
     assert _cache_lido(ambiente)["entradas"] == {}
-    assert "Cache limpo" in capsys.readouterr().out
+    assert "1 entrada(s) removida(s)" in capsys.readouterr().out
 
 
 def test_limpar_cache_preserva_entrada_recente(ambiente, monkeypatch):

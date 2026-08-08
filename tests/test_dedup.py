@@ -266,3 +266,54 @@ def test_empresa_e_titulo_sem_corroboracao_nao_apagam_requisicao_distinta():
     a = Registro("1", "https://a.test/jobs/1", "Alfa", "DevOps Júnior", confianca="alta")
     b = Registro("2", "https://a.test/jobs/2", "Alfa", "DevOps Júnior", confianca="alta")
     assert len(agrupar([a, b])) == 2
+
+
+# ------------------------------------------- pontuação em sufixo societário
+
+def test_empresa_canonica_ignora_ponto_no_sufixo_societario():
+    """Regressão do duplicado real da SKA (busca de 2026-08-08).
+
+    `_normalizar` preserva `.` de propósito, para `.net`/`node.js` sobreviverem
+    em `nucleo_do_cargo`. Isso fazia `"ltda."` não casar com SUFIXOS_SOCIETARIOS,
+    que guarda `"ltda"` — e a mesma vaga entrou duas vezes no histórico, com duas
+    análises pagas. Atingia quase toda forma abreviada, não só uma.
+    """
+    esperado = "acme"
+    for grafia in (
+        "ACME LTDA", "ACME LTDA.", "ACME Ltda.",
+        "ACME S.A.", "ACME S/A", "ACME S. A.",
+        "ACME ME.", "ACME Inc.", "ACME Corp.", "ACME Cia.",
+    ):
+        assert empresa_canonica(grafia) == esperado, grafia
+
+
+def test_empresa_canonica_funde_o_par_exato_do_historico():
+    com_ponto = "SKA AUTOMACAO DE ENGENHARIAS LTDA."
+    sem_ponto = "SKA AUTOMACAO DE ENGENHARIAS LTDA"
+    assert empresa_canonica(com_ponto) == empresa_canonica(sem_ponto)
+
+
+def test_remover_ponto_nao_funde_empresas_distintas():
+    assert empresa_canonica("ACME Inc.") != empresa_canonica("ACME Digital")
+    assert empresa_canonica("Sabre") != empresa_canonica("Saber")
+    # nome com ponto interno continua casando consigo mesmo, e só consigo
+    assert empresa_canonica("Booking.com") == empresa_canonica("booking.com")
+    assert empresa_canonica("Booking.com") != empresa_canonica("Booking Holdings")
+
+
+def test_nucleo_do_cargo_preserva_ponto_da_stack():
+    """O ponto só sai do nome da empresa — no cargo ele carrega significado."""
+    assert ".net" in nucleo_do_cargo("Desenvolvedor .NET")
+    assert "node.js" in nucleo_do_cargo("Node.js Engineer")
+    assert "c#" in nucleo_do_cargo("C# Developer")
+    assert "c++" in nucleo_do_cargo("C++ Engineer")
+
+
+def test_do_brasil_nao_e_expurgado():
+    """Deliberado: `Banco do Brasil` não pode colapsar para `banco`.
+
+    O custo é `Volvo do Brasil` não casar com `Volvo` — um falso split aceito de
+    propósito, porque nenhuma regra estrutural separa "nome + país" de "nome
+    próprio que contém o país", e falso merge é o erro mais caro aqui.
+    """
+    assert empresa_canonica("Banco do Brasil") != empresa_canonica("Banco")

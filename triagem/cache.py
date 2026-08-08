@@ -55,7 +55,15 @@ def _chave(fonte: str, consulta: str) -> str:
     return f"v{VERSAO_CACHE}|{fonte}|{digest}"
 
 
-def carregar() -> dict:
+def carregar(podar_automaticamente: bool = True) -> dict:
+    """Estado do cache, já podado por padrão.
+
+    `podar_automaticamente=False` existe para o `limpar-cache`: com a poda
+    embutida aqui, o `podar()` que ele chamava em seguida não encontrava mais
+    nada para remover e devolvia sempre 0. O comando removia as entradas
+    vencidas e anunciava "0 entrada(s) removida(s)" — o efeito estava certo, a
+    contagem é que mentia.
+    """
     if not ARQUIVO.exists():
         return {"entradas": {}, "circuitos": {}}
     try:
@@ -84,7 +92,8 @@ def carregar() -> dict:
         for chave, circuito in dados["circuitos"].items()
         if isinstance(chave, str) and isinstance(circuito, dict)
     }
-    podar(dados)
+    if podar_automaticamente:
+        podar(dados)
     return dados
 
 

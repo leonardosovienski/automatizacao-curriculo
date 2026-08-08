@@ -157,7 +157,10 @@ def main() -> int:
 
 
 def _cmd_limpar_cache(args) -> int:
-    estado = cache.carregar()  # já poda entradas acima de DIAS_RETENCAO
+    # Sem `podar_automaticamente=False` o `carregar()` já teria podado, e o
+    # `podar()` abaixo devolveria sempre 0 — o comando removia as entradas e
+    # anunciava "0 removida(s)".
+    estado = cache.carregar(podar_automaticamente=False)
     if args.tudo:
         removidas = cache.esvaziar(estado)
         detalhe = "todas as entradas e os circuitos das fontes"
