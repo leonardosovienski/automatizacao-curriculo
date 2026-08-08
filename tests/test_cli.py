@@ -7,12 +7,14 @@ pelo `main()` de verdade — com argv, lock e resolução de caminho por ambient
 para que o teste cubra também o dispatch e a serialização, não só o handler.
 """
 
+import argparse
 import json
 
 import pytest
 from filelock import FileLock
 
 from triagem import cli, historico
+from triagem.schema import AnaliseVaga, Dimensao, Notas
 
 
 def _entrada(*, empresa="ACME", titulo="Backend Engineer", status="novo", score=80.0):
@@ -251,3 +253,260 @@ def test_analisar_exige_chave_de_api(ambiente, monkeypatch, capsys, tmp_path):
 
     assert _rodar(monkeypatch, "analisar", str(lote)) == 1
     assert "GEMINI_API_KEY" in capsys.readouterr().out
+
+
+# =====================================================================
+# Orquestração de `analisar`
+#
+# É o trecho que gasta dinheiro: chamadas ao Gemini já pagas podem ser
+# perdidas se a persistência, o retry ou a interrupção forem tratados
+# errado. Todo o bloco rodava sem teste nenhum. Aqui o cliente é falso —
+# nenhuma chamada real —, mas o caminho exercitado é o de produção.
+# =====================================================================
+
+def _analise(empresa="TechCorp", titulo="Estágio DevOps"):
+    dim = lambda n: Dimensao(nota=n, justificativa="x")  # noqa: E731
+    return AnaliseVaga(
+        titulo_normalizado=titulo,
+        empresa=empresa,
+        regime="remoto",
+        localizacao="Remoto (Brasil)",
+        nivel_real="estagio",
+        stack_exigida=["Python"],
+        stack_desejavel=[],
+        idioma_trabalho="pt",
+        link="https://example.com/1",
+        origem="teste",
+        descartada=False,
+        motivo_descarte=None,
+        notas=Notas(
+            d1_crescimento=dim(9),
+            d2_regime_localizacao=dim(10),
+            d3_stack_fit=dim(9),
+            d4_ingles=dim(8),
+            d5_nivel_real=dim(10),
+        ),
+        alertas=[],
+    )
+
+
+def _args_analisar(**kw):
+    base = dict(
+        pesos=None, stdin=False, arquivo=None, modelo=cli.MODELO_PADRAO,
+        paralelo=2, saida=None, reanalisar=False,
+    )
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+@pytest.fixture
+def gemini_falso(monkeypatch):
+    """Substitui o cliente e a análise; registra as chamadas feitas."""
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-de-teste-1234567890")
+    monkeypatch.setattr(cli, "criar_cliente", lambda: object())
+
+    chamadas = []
+
+    def instalar(comportamento):
+        def falso(client, texto, modelo, tentativas=None):
+            chamadas.append(texto)
+            return comportamento(texto, chamadas.count(texto))
+        monkeypatch.setattr(cli, "analisar_vaga", falso)
+
+    return chamadas, instalar
+
+
+BOA, RUIM = "Vaga: boa\nEmpresa: Alfa", "Vaga: ruim\nEmpresa: Beta"
+
+
+def test_sucesso_e_persistido_mesmo_quando_outra_vaga_falha(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """Falha de uma vaga não pode descartar a análise já paga da outra."""
+    chamadas, instalar = gemini_falso
+
+    def comportamento(texto, _n):
+        if texto == RUIM:
+            raise RuntimeError("cota estourada")
+        return _analise(empresa="Alfa")
+
+    instalar(comportamento)
+    historico.aplicar_config_do_ambiente()
+
+    codigo = cli._cmd_analisar(_args_analisar(), textos=[BOA, RUIM])
+
+    assert codigo == 2  # 2 = concluiu, mas com falhas pendentes
+    persistido = _ler(ambiente)
+    assert len(persistido) == 1
+    assert next(iter(persistido.values()))["analise"]["empresa"] == "Alfa"
+
+    saida = capsys.readouterr().out
+    assert "não analisadas mesmo após retry" in saida
+    assert "cota estourada" in saida
+
+
+def test_checkpoint_sobrevive_a_interrupcao_durante_o_retry(
+    ambiente, monkeypatch, gemini_falso
+):
+    """A garantia central do checkpoint, hoje só descrita em comentário.
+
+    "Persiste o que já terminou antes de esperar a segunda passagem. Se o
+    processo for interrompido, chamadas pagas não são perdidas." Um Ctrl+C
+    no meio do retry não pode levar junto o que já foi analisado e pago.
+    """
+    chamadas, instalar = gemini_falso
+
+    def comportamento(texto, n):
+        if texto == RUIM and n == 1:
+            raise RuntimeError("falha transitória")
+        if texto == RUIM:
+            raise KeyboardInterrupt  # usuário aborta durante o retry
+        return _analise(empresa="Alfa")
+
+    instalar(comportamento)
+    historico.aplicar_config_do_ambiente()
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._cmd_analisar(_args_analisar(), textos=[BOA, RUIM])
+
+    # o disco já tem a vaga boa, apesar da interrupção
+    persistido = _ler(ambiente)
+    assert len(persistido) == 1
+    assert next(iter(persistido.values()))["analise"]["empresa"] == "Alfa"
+
+
+def test_retry_sequencial_recupera_falha_transitoria(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    chamadas, instalar = gemini_falso
+
+    def comportamento(texto, n):
+        if texto == RUIM and n == 1:
+            raise RuntimeError("timeout")
+        return _analise(empresa="Alfa" if texto == BOA else "Beta")
+
+    instalar(comportamento)
+    historico.aplicar_config_do_ambiente()
+
+    codigo = cli._cmd_analisar(_args_analisar(), textos=[BOA, RUIM])
+
+    assert codigo == 0
+    assert len(_ler(ambiente)) == 2
+    assert "OK na segunda tentativa" in capsys.readouterr().out
+
+
+def test_falha_ao_gravar_checkpoint_aborta_sem_relatorio(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """Disco cheio no checkpoint não pode passar como execução bem-sucedida."""
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: _analise())
+    historico.aplicar_config_do_ambiente()
+
+    def explodir(_hist):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(historico, "salvar", explodir)
+
+    codigo = cli._cmd_analisar(_args_analisar(), textos=[BOA])
+
+    assert codigo == 1
+    assert "Erro ao salvar checkpoint" in capsys.readouterr().out
+
+
+def test_vaga_ja_no_historico_nao_gasta_chamada(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """Dedup por histórico é o que evita pagar duas vezes pela mesma vaga."""
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: _analise())
+    historico.aplicar_config_do_ambiente()
+
+    assert cli._cmd_analisar(_args_analisar(), textos=[BOA]) == 0
+    assert len(chamadas) == 1
+
+    capsys.readouterr()
+    assert cli._cmd_analisar(_args_analisar(), textos=[BOA]) == 0
+    assert len(chamadas) == 1  # nenhuma chamada nova
+    assert "já no histórico" in capsys.readouterr().out
+
+
+def test_reanalisar_forca_nova_chamada(ambiente, monkeypatch, gemini_falso):
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: _analise())
+    historico.aplicar_config_do_ambiente()
+
+    cli._cmd_analisar(_args_analisar(), textos=[BOA])
+    cli._cmd_analisar(_args_analisar(reanalisar=True), textos=[BOA])
+
+    assert len(chamadas) == 2
+
+
+def test_duplicata_no_input_e_analisada_uma_vez_so(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: _analise())
+    historico.aplicar_config_do_ambiente()
+
+    assert cli._cmd_analisar(_args_analisar(), textos=[BOA, BOA]) == 0
+
+    assert len(chamadas) == 1
+    assert len(_ler(ambiente)) == 1
+    assert "duplicada no input" in capsys.readouterr().out
+
+
+def test_chave_de_api_nao_vaza_na_mensagem_de_erro(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """A mensagem de falha vai para o terminal: não pode carregar a chave."""
+    chave = "chave-de-teste-1234567890"
+    chamadas, instalar = gemini_falso
+
+    def comportamento(texto, n):
+        raise RuntimeError(f"401 Unauthorized para key={chave}")
+
+    instalar(comportamento)
+    historico.aplicar_config_do_ambiente()
+
+    cli._cmd_analisar(_args_analisar(), textos=[BOA])
+
+    saida = capsys.readouterr().out
+    assert chave not in saida
+    assert "<GEMINI_API_KEY>" in saida
+
+
+def test_nenhum_resultado_ainda_explica_a_causa(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """Falhar tudo é o caso mais comum (chave inválida) e era o menos explicado.
+
+    O `return 1` acontecia antes do bloco de falhas, então o usuário via apenas
+    "Nenhuma vaga analisada." — sem uma linha sobre o motivo.
+    """
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: (_ for _ in ()).throw(RuntimeError("cota diária esgotada")))
+    historico.aplicar_config_do_ambiente()
+
+    assert cli._cmd_analisar(_args_analisar(), textos=[BOA]) == 1
+
+    saida = capsys.readouterr().out
+    assert "Nenhuma vaga analisada." in saida
+    assert "cota diária esgotada" in saida
+
+
+def test_analisar_paralelo_separa_sucessos_de_falhas(monkeypatch):
+    """Unidade: nenhuma exceção individual pode derrubar o lote inteiro."""
+    def falso(client, texto, modelo, tentativas=None):
+        if texto == "b":
+            raise RuntimeError("falha isolada")
+        return _analise()
+
+    monkeypatch.setattr(cli, "analisar_vaga", falso)
+
+    analises, falhas = cli._analisar_paralelo(
+        object(), [("id-a", "a"), ("id-b", "b"), ("id-c", "c")], cli.MODELO_PADRAO, 3
+    )
+
+    assert set(analises) == {"id-a", "id-c"}
+    assert [vid for vid, _, _ in falhas] == ["id-b"]
