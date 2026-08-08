@@ -7,7 +7,7 @@ para o backend). React 19 + TypeScript + Vite + Tailwind v4.
 
 ```bash
 # 1. Backend (na raiz do projeto)
-python -m uvicorn api.app:app --port 8000
+python -m uvicorn api.app:app --host 127.0.0.1 --port 8000
 
 # 2. Frontend
 cp .env.example .env.local   # ajuste VITE_API_URL se necessário
@@ -19,6 +19,10 @@ Abra `http://localhost:5173`. A lista mostra as vagas do `historico.json`
 (geradas por `triar analisar`/`triar buscar`), com filtro por status e opção
 de atualizar o status diretamente na UI — a mudança é gravada no mesmo
 `historico.json` usado pela CLI.
+
+> **Somente localhost:** a API não possui autenticação e o `PATCH` altera o status das
+> vagas. Não use `--host 0.0.0.0`, encaminhamento de porta ou proxy público sem adicionar
+> autenticação e HTTPS na frente do serviço.
 
 ## Scripts
 

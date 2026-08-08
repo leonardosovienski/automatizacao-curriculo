@@ -209,5 +209,7 @@ jobs:
           path: |
             relatorio.md
             historico.json
-          retention-days: 14
+          # O relatório expõe preferências profissionais e justificativas do score.
+          # Três dias bastam para baixar/diagnosticar sem deixá-lo público por semanas.
+          retention-days: 3
           if-no-files-found: warn

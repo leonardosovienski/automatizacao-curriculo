@@ -17,6 +17,10 @@ vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
   histórico. A cascata agora compara também os registros já aceitos no lote e preserva a
   segunda URL como alias. O teste reproduz o par da Solvd do run `31240277177` e foi
   validado por mutação.
+- `_cmd_buscar`, `_cmd_sync_ats` e `_cmd_cv` passam a ter testes de orquestração com
+  dublês, sem rede, LLM pago ou alteração do histórico real.
+- O artefato público `resultado-busca` passa de 14 para 3 dias de retenção, e a
+  documentação deixa explícito que a API sem autenticação deve escutar só em localhost.
 - **Lock divergente entre CLI e API — perda silenciosa de atualização.** `cli.py` travava
   `historico.lock` e `api/app.py` travava `historico.json.lock`, porque `with_suffix()`
   substitui a extensão em vez de acrescentar. Os dois lados nunca se excluíam: como ambos

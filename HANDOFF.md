@@ -53,7 +53,7 @@ bug — teste verde não é evidência até você tentar derrubá-lo.
 - Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
   transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
 - O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
-- CI executa Ruff, compileall e **348 testes** (cobertura de branches ≥ 75%, hoje 80.5%),
+- CI executa Ruff, compileall e **352 testes** (cobertura de branches ≥ 75%, hoje 82.7%),
   lint+build do frontend e a suíte E2E Playwright como gate obrigatório de merge.
 
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de

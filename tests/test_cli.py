@@ -13,8 +13,8 @@ import json
 import pytest
 from filelock import FileLock
 
-from triagem import cli, dedup, historico
-from triagem.schema import AnaliseVaga, Dimensao, Notas
+from triagem import alvos_ats, ats, cli, dedup, historico
+from triagem.schema import AnaliseVaga, Dimensao, Notas, VagaEncontrada
 
 
 def _entrada(*, empresa="ACME", titulo="Backend Engineer", status="novo", score=80.0):
@@ -50,6 +50,7 @@ def ambiente(tmp_path, monkeypatch):
     hist = tmp_path / "historico.json"
     monkeypatch.setenv("TRIAGEM_HISTORICO", str(hist))
     monkeypatch.setenv("TRIAGEM_CACHE", str(tmp_path / ".cache_busca.json"))
+    monkeypatch.setenv("TRIAGEM_ALVOS_ATS", str(tmp_path / "alvos_ats.json"))
     return tmp_path
 
 
@@ -554,3 +555,113 @@ def test_analisar_paralelo_separa_sucessos_de_falhas(monkeypatch):
 
     assert set(analises) == {"id-a", "id-c"}
     assert [vid for vid, _, _ in falhas] == ["id-b"]
+
+
+# --------------------------------------------------------------- buscar
+
+def test_buscar_encaminha_vaga_estruturada_para_triagem(ambiente, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(cli, "criar_cliente", lambda: "cliente")
+    monkeypatch.setattr(cli, "carregar_cv_base", lambda: "CV sem dados privados")
+    vaga = VagaEncontrada(
+        titulo="Junior DevOps Engineer",
+        empresa="ACME",
+        descricao="Descrição suficientemente longa para representar uma vaga real.",
+        link="https://jooble.org/jdp/123?utm_source=teste",
+        link_final="https://acme.example/jobs/456?utm_campaign=x",
+        origem="jooble",
+        publicada_em="2026-08-08",
+        localizacao="Brazil",
+        confianca_empresa="alta",
+        ats_provedor="greenhouse",
+        ats_token="acme",
+        ats_job_id="456",
+    )
+    busca_recebida = {}
+
+    def buscar_falso(client, cv, pedido, limite, modelo, *, log, usar_cache):
+        busca_recebida.update(
+            client=client, cv=cv, pedido=pedido, limite=limite,
+            modelo=modelo, usar_cache=usar_cache,
+        )
+        return [vaga]
+
+    triagem_recebida = {}
+
+    def analisar_falso(args, textos, chaves, registros):
+        triagem_recebida.update(textos=textos, chaves=chaves, registros=registros)
+        return 7
+
+    monkeypatch.setattr(cli, "buscar_vagas", buscar_falso)
+    monkeypatch.setattr(cli, "_cmd_analisar", analisar_falso)
+    args = argparse.Namespace(
+        testar_fontes=False, limite=5, pedido="DevOps Jr", modelo=cli.MODELO_PADRAO,
+        sem_cache=True, paralelo=2, pesos=None, saida=None, reanalisar=False,
+    )
+
+    assert cli._cmd_buscar(args) == 7
+    assert busca_recebida == {
+        "client": "cliente", "cv": "CV sem dados privados", "pedido": "DevOps Jr",
+        "limite": 5, "modelo": cli.MODELO_PADRAO, "usar_cache": False,
+    }
+    assert triagem_recebida["chaves"] == ["https://acme.example/jobs/456"]
+    registro = triagem_recebida["registros"][0]
+    assert (registro.empresa, registro.ats_token, registro.ats_job_id) == (
+        "ACME", "acme", "456",
+    )
+    assert json.loads(triagem_recebida["textos"][0])["origem"] == "jooble"
+
+
+# ------------------------------------------------------------- sync-ats
+
+def test_sync_ats_fecha_vaga_removida_e_persiste(ambiente, monkeypatch):
+    historico.aplicar_config_do_ambiente()
+    alvos_ats.aplicar_config_do_ambiente()
+    _escrever(ambiente, {
+        "vaga000001": {
+            **_entrada(status="novo"),
+            "texto": json.dumps({
+                "ats_provedor": "greenhouse", "ats_token": "acme", "ats_job_id": "123",
+            }),
+        },
+    })
+    (ambiente / "alvos_ats.json").write_text(json.dumps({
+        "alvos": {
+            "greenhouse:acme": {
+                "provedor": "greenhouse", "token": "acme", "status": "ativo",
+            },
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ats, "sincronizar_alvos", lambda alvos, paralelo: [
+        ats.ResultadoSyncATS("greenhouse", "acme", "ativo", frozenset({"456"})),
+    ])
+
+    assert cli._cmd_sync_ats(argparse.Namespace(paralelo=2)) == 0
+    assert _ler(ambiente)["vaga000001"]["status"] == "fechada"
+    estado = json.loads((ambiente / "alvos_ats.json").read_text(encoding="utf-8"))
+    assert estado["alvos"]["greenhouse:acme"]["status"] == "ativo"
+
+
+# -------------------------------------------------------------------- cv
+
+def test_cv_gera_e_salva_material_sem_chamada_real(ambiente, monkeypatch, tmp_path):
+    _escrever(ambiente, {"abcdef1234": _entrada(empresa="ACME")})
+    historico.aplicar_config_do_ambiente()
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(cli, "carregar_cv_base", lambda: "CV base")
+    monkeypatch.setattr(cli, "criar_cliente", lambda: "cliente")
+    recebido = {}
+
+    def gerar_falso(client, cv, texto, analise, modelo):
+        recebido.update(client=client, cv=cv, texto=texto, analise=analise, modelo=modelo)
+        return "# Material gerado"
+
+    monkeypatch.setattr(cli, "gerar_material", gerar_falso)
+    saida = tmp_path / "candidatura" / "material.md"
+    args = argparse.Namespace(id="abcdef", modelo=cli.MODELO_PADRAO, saida=str(saida))
+
+    assert cli._cmd_cv(args) == 0
+    assert saida.read_text(encoding="utf-8") == "# Material gerado"
+    assert recebido["client"] == "cliente"
+    assert recebido["cv"] == "CV base"
+    assert recebido["analise"]["empresa"] == "ACME"
