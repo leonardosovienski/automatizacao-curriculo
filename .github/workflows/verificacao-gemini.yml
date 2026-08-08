@@ -14,11 +14,6 @@ name: Verificação Gemini (manual)
 
 on:
   workflow_dispatch:
-  # TEMPORÁRIO — `workflow_dispatch` só aparece depois que o arquivo está na
-  # main. Este gatilho existe para conseguir a primeira execução ainda na
-  # branch; deve ser removido antes do merge, senão cada push gasta cota.
-  push:
-    branches: [claude/wonderful-ride-ldjj2d]
 
 permissions:
   contents: read
