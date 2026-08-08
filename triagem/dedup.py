@@ -32,12 +32,27 @@ from typing import Iterable, Optional
 # Sufixos societários e ruído que variam de portal para portal para a mesma empresa.
 SUFIXOS_SOCIETARIOS = frozenset(
     {
-        "ltda", "sa", "s a", "me", "epp", "eireli", "eirelli", "inc", "llc",
+        "ltda", "sa", "me", "epp", "eireli", "eirelli", "inc", "llc",
         "corp", "corporation", "co", "cia", "group", "grupo", "holding",
         "tecnologia", "tecnologias", "solucoes", "solutions", "servicos",
-        "consultoria", "brasil", "brazil", "do brasil",
+        "consultoria", "brasil", "brazil",
     }
 )
+
+# Sufixos de mais de uma palavra precisam sair ANTES da tokenização: o filtro
+# acima compara token a token, então `"s a"` e `"do brasil"` — que estavam no
+# conjunto — nunca podiam casar com nada. Eram código morto declarando uma
+# intenção que não acontecia: `ACME S/A` virava `acme s a` (o `/` vira espaço em
+# `_normalizar`) e não colapsava para `acme`.
+#
+# `"do brasil"` foi deliberadamente DEIXADO de fora, apesar de estar no conjunto
+# antigo. Ativá-lo faria `Volvo do Brasil` casar com `Volvo` (correto), mas
+# também `Banco do Brasil` virar `banco` — e aí um empregador chamado só `Banco`
+# seria fundido com ele. Não há regra estrutural que separe "nome + qualificador
+# de país" de "nome próprio que contém o país"; a diferença é conhecimento de
+# mundo. Como falso merge é pior que falso split (ver docstring do módulo), fica
+# de fora. O comentário em test_dedup.py já registrava esse risco.
+SUFIXOS_COMPOSTOS = ("s a",)
 
 # Ruído de título: senioridade, regime e marketing. O que sobra é o núcleo do cargo.
 # Sem isso, "Work From Home Junior DevOps / Rd" e "Junior DevOps Engineer" — a mesma
@@ -70,9 +85,27 @@ def _normalizar(texto: str) -> str:
 
 
 def empresa_canonica(nome: str) -> str:
-    """Nome comparável entre portais: sem acento, pontuação nem sufixo societário."""
-    tokens = [t for t in _normalizar(nome).split() if t and t not in SUFIXOS_SOCIETARIOS]
-    return " ".join(tokens)
+    """Nome comparável entre portais: sem acento, pontuação nem sufixo societário.
+
+    O ponto é removido aqui e **só aqui**. `_normalizar` o preserva de propósito,
+    porque `nucleo_do_cargo` precisa de `.net` e `node.js` inteiros — mas em nome
+    de empresa ele é só pontuação, e mantê-lo fazia `"ltda."` não casar com
+    SUFIXOS_SOCIETARIOS, que guarda `"ltda"`. O efeito atingia quase toda forma
+    abreviada (`S.A.`, `Inc.`, `Corp.`, `Cia.`), não só uma: apenas as grafias sem
+    pontuação funcionavam.
+
+    Medido em 2026-08-08, na primeira busca real: a SKA entrou duas vezes no
+    histórico, uma como `SKA AUTOMACAO DE ENGENHARIAS LTDA` e outra com ponto
+    final. Duas análises pagas para o mesmo anúncio.
+
+    Remover o ponto de todos os tokens é seguro porque o valor devolvido só é
+    usado para comparar igualdade (camadas B e C) — nunca é exibido. `Booking.com`
+    vira `bookingcom` dos dois lados e continua casando consigo mesmo.
+    """
+    texto = " ".join(bruto.replace(".", "") for bruto in _normalizar(nome).split())
+    for composto in SUFIXOS_COMPOSTOS:
+        texto = re.sub(rf"(?:^|\s){re.escape(composto)}(?=\s|$)", " ", texto)
+    return " ".join(t for t in texto.split() if t not in SUFIXOS_SOCIETARIOS)
 
 
 def nucleo_do_cargo(titulo: str) -> frozenset[str]:
