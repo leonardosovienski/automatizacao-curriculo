@@ -380,6 +380,8 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
     resultados: List[VagaPontuada] = []
     pendentes: List[Tuple[str, str]] = []  # (id, texto)
     vistos = set()
+    registros_no_lote: List[dedup.Registro] = []
+    aliases_pendentes: Dict[str, List[str]] = {}
     historico_recalculado = False
 
     for indice, texto in enumerate(textos):
@@ -389,10 +391,18 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
         if registros:
             registros[indice].id = vid
             existente = dedup.resolver_id(hist, registros[indice])
+            existente_no_lote = False
+            if not existente:
+                existente = dedup.resolver_registro(registros_no_lote, registros[indice])
+                existente_no_lote = bool(existente)
             if existente and existente != vid:
-                print(f"  [{existente}] mesma vaga já vista em outra fonte "
+                origem = "mesma vaga no lote" if existente_no_lote else "mesma vaga já vista"
+                print(f"  [{existente}] {origem} em outra fonte "
                       f"({registros[indice].url}) — reaproveitando.")
-                historico.registrar_alias(hist, existente, registros[indice].url)
+                if existente_no_lote:
+                    aliases_pendentes.setdefault(existente, []).append(registros[indice].url)
+                else:
+                    historico.registrar_alias(hist, existente, registros[indice].url)
                 vid = existente
         if vid in vistos:
             # Antes sumia em silêncio: o relatório dizia "TOTAL ANALISADAS: 1"
@@ -400,6 +410,9 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
             print(f"  [{vid}] duplicada no input — pulando.")
             continue
         vistos.add(vid)
+        if registros:
+            registros[indice].id = vid
+            registros_no_lote.append(registros[indice])
         entrada = hist.get(vid)
         if entrada and entrada.get("analise") and not args.reanalisar:
             analise = AnaliseVaga.model_validate(entrada["analise"])
@@ -444,6 +457,10 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
             vaga = pontuar(_impor_campos_autoritativos(analises[vid], texto), vid, pesos)
             historico.registrar(hist, vaga, texto)
             resultados.append(vaga)
+        for vid, urls in aliases_pendentes.items():
+            if vid in hist:
+                for url in urls:
+                    historico.registrar_alias(hist, vid, url)
         if analises:
             try:
                 historico.salvar(hist)
@@ -461,6 +478,8 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
                     vaga = pontuar(_impor_campos_autoritativos(analise, texto), vid, pesos)
                     historico.registrar(hist, vaga, texto)
                     resultados.append(vaga)
+                    for url in aliases_pendentes.get(vid, []):
+                        historico.registrar_alias(hist, vid, url)
                     print(f"  [{vid}] OK na segunda tentativa")
                 except Exception as e:  # noqa: BLE001 — registramos e seguimos
                     restantes.append((vid, texto, e))

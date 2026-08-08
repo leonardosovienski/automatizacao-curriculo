@@ -13,7 +13,7 @@ import json
 import pytest
 from filelock import FileLock
 
-from triagem import cli, historico
+from triagem import cli, dedup, historico
 from triagem.schema import AnaliseVaga, Dimensao, Notas
 
 
@@ -461,6 +461,43 @@ def test_duplicata_no_input_e_analisada_uma_vez_so(
     assert len(chamadas) == 1
     assert len(_ler(ambiente)) == 1
     assert "duplicada no input" in capsys.readouterr().out
+
+
+def test_duplicata_semantica_no_mesmo_lote_nao_gasta_duas_analises(
+    ambiente, monkeypatch, gemini_falso, capsys
+):
+    """Regressao do run 31240277177: as duas Solvd eram novas no mesmo lote.
+
+    A cascata consultava apenas o historico carregado. Como nenhuma das duas
+    ainda tinha sido persistida, URLs Jooble diferentes furavam a deduplicacao
+    mesmo com empresa, titulo e localidade identicos.
+    """
+    chamadas, instalar = gemini_falso
+    instalar(lambda texto, n: _analise(empresa="Solvd", titulo="Cloud/DevOps Engineer"))
+    historico.aplicar_config_do_ambiente()
+
+    textos = [
+        json.dumps({"empresa": "Solvd", "titulo": "Cloud/DevOps Engineer"}),
+        json.dumps({"empresa": "Solvd", "titulo": "Cloud/DevOps Engineer"}),
+    ]
+    chaves = ["https://jooble.org/jdp/1", "https://jooble.org/jdp/2"]
+    registros = [
+        dedup.Registro(
+            "", url, "Solvd", "Cloud/DevOps Engineer",
+            confianca="alta", idade_dias=3 + indice * 5, localidade="Brazil",
+        )
+        for indice, url in enumerate(chaves)
+    ]
+
+    assert cli._cmd_analisar(
+        _args_analisar(), textos=textos, chaves=chaves, registros=registros
+    ) == 0
+
+    assert len(chamadas) == 1
+    persistido = _ler(ambiente)
+    assert len(persistido) == 1
+    assert next(iter(persistido.values()))["aliases"] == [chaves[1]]
+    assert "mesma vaga no lote" in capsys.readouterr().out
 
 
 def test_chave_de_api_nao_vaza_na_mensagem_de_erro(

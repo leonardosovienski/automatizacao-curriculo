@@ -11,6 +11,12 @@ vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
 
 ### Corrigido
 
+- **Deduplicação ignorava duplicatas novas dentro da mesma busca.** Cada vaga era comparada
+  apenas ao histórico carregado antes do lote. Duas URLs distintas da mesma vaga podiam,
+  portanto, entrar juntas em `pendentes`, consumir duas chamadas e receber duas linhas no
+  histórico. A cascata agora compara também os registros já aceitos no lote e preserva a
+  segunda URL como alias. O teste reproduz o par da Solvd do run `31240277177` e foi
+  validado por mutação.
 - **Lock divergente entre CLI e API — perda silenciosa de atualização.** `cli.py` travava
   `historico.lock` e `api/app.py` travava `historico.json.lock`, porque `with_suffix()`
   substitui a extensão em vez de acrescentar. Os dois lados nunca se excluíam: como ambos
