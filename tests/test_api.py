@@ -52,7 +52,8 @@ def _entrada(
 def cliente(tmp_path, monkeypatch):
     caminho = tmp_path / "historico.json"
     monkeypatch.setattr(historico, "ARQUIVO", caminho)
-    monkeypatch.setattr(api_app, "LOCK", filelock.FileLock(str(caminho) + ".lock"))
+    monkeypatch.setattr(api_app, "LOCK", filelock.FileLock(str(historico.caminho_lock())))
+    monkeypatch.setattr(api_app, "LOCK_TIMEOUT_S", 0.2)
     return TestClient(api_app.app)
 
 
@@ -187,3 +188,66 @@ def test_atualizar_status_id_inexistente_404(cliente):
     _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
     resp = cliente.patch("/api/vagas/zzz/status", json={"status": "aplicado"})
     assert resp.status_code == 404
+
+
+# ------------------------------------------------- histórico ilegível
+
+@pytest.mark.parametrize("rota", ["/api/stats", "/api/vagas", "/api/vagas/a1"])
+def test_historico_corrompido_vira_503_e_nao_500(cliente, rota):
+    """Arquivo ilegível é condição de servidor conhecida, não bug: 503 + dica.
+
+    Antes o ValueError de `historico.carregar()` subia cru e virava 500, sem
+    corpo útil — o frontend não tinha como distinguir "arquivo quebrado" de
+    "a API caiu", e a dica do .bak (a única acionável) se perdia.
+    """
+    historico.ARQUIVO.write_text("{ isto nao e json valido", encoding="utf-8")
+
+    resp = cliente.get(rota)
+    assert resp.status_code == 503
+    assert "backup" in resp.json()["detail"].lower()
+
+
+def test_historico_nao_objeto_vira_503(cliente):
+    historico.ARQUIVO.write_text("[]", encoding="utf-8")
+    resp = cliente.get("/api/vagas")
+    assert resp.status_code == 503
+
+
+def test_patch_com_historico_corrompido_nao_vira_400(cliente):
+    """Distingue "arquivo quebrado" (503) de "status inválido" (400)."""
+    historico.ARQUIVO.write_text("{ quebrado", encoding="utf-8")
+    resp = cliente.patch("/api/vagas/a1/status", json={"status": "aplicado"})
+    assert resp.status_code == 503
+
+
+# ------------------------------------------------------ lock compartilhado
+
+def test_api_usa_o_mesmo_lock_da_cli(tmp_path, monkeypatch):
+    """Regressão do lost update: os dois lados precisam do MESMO arquivo.
+
+    `api_app.LOCK` é montado na importação; o que importa é que ele venha de
+    `historico.caminho_lock()` — a mesma função que a CLI usa — e não de uma
+    concatenação própria que possa divergir de novo.
+    """
+    monkeypatch.setattr(historico, "ARQUIVO", tmp_path / "historico.json")
+    assert historico.caminho_lock().name == "historico.json.lock"
+
+    import inspect
+
+    fonte = inspect.getsource(api_app)
+    assert "FileLock(str(historico.caminho_lock()))" in fonte
+
+
+def test_patch_devolve_409_quando_o_lock_esta_ocupado(cliente, tmp_path):
+    """Concorrência com a CLI: espera-se 409 acionável, não corrupção nem 500."""
+    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
+    # instância distinta sobre o MESMO arquivo: contenção real de SO, como
+    # aconteceria com um `triar analisar` rodando em paralelo
+    outro_processo = filelock.FileLock(str(historico.caminho_lock()), thread_local=False)
+
+    with outro_processo:
+        resp = cliente.patch("/api/vagas/a1/status", json={"status": "aplicado"})
+
+    assert resp.status_code == 409
+    # o registro não pode ter sido tocado
+    assert historico.carregar()["a1"]["status"] == "novo"

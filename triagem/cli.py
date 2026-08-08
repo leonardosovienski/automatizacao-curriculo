@@ -133,7 +133,7 @@ def main() -> int:
     # Serializa comandos do CLI. Sem lock, duas execuções fazem read-modify-write
     # sobre JSONs diferentes e a última apaga o estado gravado pela primeira.
     historico.ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(historico.ARQUIVO.with_suffix(".lock")), timeout=2)
+    lock = FileLock(str(historico.caminho_lock()), timeout=2)
     try:
         with lock:
             if args.comando == "buscar":
@@ -478,6 +478,11 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
 
     if not resultados:
         print("Nenhuma vaga analisada.")
+        # Sem isto o pior caso era o menos informativo: quando TODAS as vagas
+        # falham (chave inválida, cota estourada, rede fora), o retorno acontecia
+        # antes do bloco de falhas lá embaixo e o usuário via só "Nenhuma vaga
+        # analisada.", sem uma linha sequer sobre a causa.
+        _relatar_falhas(falhas)
         return 1
 
     print()
@@ -491,12 +496,18 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
             print(f"\nErro no export: {e}")
             return 1
 
-    if falhas:
-        print(f"\nAtenção: {len(falhas)} vaga(s) não analisadas mesmo após retry:")
-        for vid, _, e in falhas:
-            print(f"  [{vid}] {type(e).__name__}: {_redigir_segredos(str(e))}")
-        print("Rode novamente para reprocessar (as já analisadas serão puladas pelo histórico).")
+    _relatar_falhas(falhas)
     return 2 if falhas else 0
+
+
+def _relatar_falhas(falhas: List[Tuple[str, str, Exception]]) -> None:
+    """Motivo de cada vaga não analisada, com segredos redigidos."""
+    if not falhas:
+        return
+    print(f"\nAtenção: {len(falhas)} vaga(s) não analisadas mesmo após retry:")
+    for vid, _, e in falhas:
+        print(f"  [{vid}] {type(e).__name__}: {_redigir_segredos(str(e))}")
+    print("Rode novamente para reprocessar (as já analisadas serão puladas pelo histórico).")
 
 
 def _analisar_paralelo(client, pendentes, modelo, paralelo, pesos=None):

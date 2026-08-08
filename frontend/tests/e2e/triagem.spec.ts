@@ -5,11 +5,15 @@ import {
   firstJobCard,
   firstStatusSelect,
   getVisibleScores,
+  jobButtons,
   openApp,
   searchBox,
+  SEED,
   selectJobStatus,
   sortSelect,
+  statValue,
   statusLabels,
+  STATUS_POR_ROTULO,
 } from './helpers/app';
 import { attachDiagnostics } from './helpers/diagnostics';
 
@@ -55,12 +59,12 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
       await expect(page.getByText(label, { exact: true })).toBeVisible();
     }
 
-    const body = await page.locator('main').innerText();
-    const labels = ['Total', 'Novas', 'Aplicadas', 'Entrevistas', 'Fechadas'];
+    // "Total" é o único contador estável entre testes (os demais mudam conforme
+    // os testes de status mutam o seed), então é nele que dá para afirmar valor.
+    expect(await statValue(page, 'Total')).toBe(SEED.total);
 
-    for (const label of labels) {
-      const regex = new RegExp(`\\b\\d+\\s*${label}\\b`, 'i');
-      expect(body).toMatch(regex);
+    for (const label of ['Novas', 'Aplicadas', 'Entrevistas', 'Fechadas']) {
+      expect(await statValue(page, label)).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -101,65 +105,69 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     await expect(firstJobButton(page)).toBeVisible();
   });
 
-  test('busca encontra vaga por empresa quando há dados', async ({ page }) => {
+  // O seed (fixtures/historico.seed.json) é fixo e determinístico: dava para
+  // afirmar o resultado exato. O `test.skip` que existia aqui transformava uma
+  // regressão do fixture em teste verde em vez de vermelho.
+  test('busca por empresa isola a vaga daquela empresa', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
+    await expect(jobButtons(page)).toHaveCount(SEED.total);
 
-    const first = firstJobButton(page);
-    await expect(first).toBeVisible();
+    await searchBox(page).fill('DataForge');
 
-    const text = await first.innerText();
-    const knownCompany = ['GlobalSoft'].find(company => text.includes(company));
-
-    test.skip(!knownCompany, 'Nenhuma empresa conhecida disponível no dataset atual.');
-
-    await searchBox(page).fill(knownCompany!);
-    await expect(page.getByText(knownCompany!, { exact: false }).first()).toBeVisible();
+    await expect(jobButtons(page)).toHaveCount(1);
+    await expect(page.getByRole('heading', { name: SEED.recente.titulo })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: SEED.maiorScore.titulo })
+    ).toHaveCount(0);
   });
 
   test('busca sem resultado não deixa resultados falsos', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
+    await expect(jobButtons(page)).toHaveCount(SEED.total);
+
     await searchBox(page).fill('__vaga_que_nao_deve_existir_9f3a21__');
 
-    await expect(
-      page.getByRole('button', { name: /^\d{1,3}\s.+/ })
-    ).toHaveCount(0);
+    await expect(jobButtons(page)).toHaveCount(0);
   });
 
   test('limpar busca restaura os resultados', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
-    const before = await page
-      .getByRole('button', { name: /^\d{1,3}\s.+/ })
-      .count();
+    // Contagem literal do seed em vez de "o que estiver na tela": o locator
+    // antigo (nome começando em dígito) ignorava a vaga descartada, que mostra
+    // "—" no lugar do score, então before/after podiam ser 0 e o teste passava.
+    await expect(jobButtons(page)).toHaveCount(SEED.total);
 
     await searchBox(page).fill('__sem_resultado__');
-    await searchBox(page).clear();
+    await expect(jobButtons(page)).toHaveCount(0);
 
-    await expect(
-      page.getByRole('button', { name: /^\d{1,3}\s.+/ })
-    ).toHaveCount(before);
+    await searchBox(page).clear();
+    await expect(jobButtons(page)).toHaveCount(SEED.total);
   });
 
   test('ordena por maior e menor score', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
 
-    await sortSelect(page).selectOption({ label: 'Maior score' });
-    const desc = await getVisibleScores(page);
+    // Sem esta garantia as asserções abaixo passavam por vacuidade: com menos
+    // de dois scores visíveis, "está ordenado" é verdade para qualquer coisa.
+    await expect(jobButtons(page)).toHaveCount(SEED.total);
 
-    if (desc.length >= 2) {
-      expect(desc).toEqual([...desc].sort((a, b) => b - a));
-    }
+    await sortSelect(page).selectOption({ label: 'Maior score' });
+    expect(await getVisibleScores(page)).toEqual([...SEED.scoresVisiveis]);
 
     await sortSelect(page).selectOption({ label: 'Menor score' });
-    const asc = await getVisibleScores(page);
-
-    if (asc.length >= 2) {
-      expect(asc).toEqual([...asc].sort((a, b) => a - b));
-    }
+    expect(await getVisibleScores(page)).toEqual([...SEED.scoresVisiveis].reverse());
   });
 
-  test('opção Mais recente é selecionável', async ({ page }) => {
+  test('Mais recente ordena por data, não por score', async ({ page }) => {
+    await page.getByRole('button', { name: 'Todas' }).click();
+
+    await sortSelect(page).selectOption({ label: 'Maior score' });
+    await expect(firstJobButton(page)).toContainText(SEED.maiorScore.titulo);
+
     await sortSelect(page).selectOption({ label: 'Mais recente' });
-    await expect(sortSelect(page)).toHaveValue(await sortSelect(page).inputValue());
+    // A vaga mais recente tem score MENOR: se a ordenação por data não
+    // estivesse implementada, o primeiro cartão continuaria sendo o de score 95.
+    await expect(firstJobButton(page)).toContainText(SEED.recente.titulo);
   });
 
   test('expande uma vaga e mostra ações/detalhes', async ({ page }) => {
@@ -187,32 +195,26 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     expect(href).not.toMatch(/^javascript:/i);
   });
 
-  test('sinaliza fixture/mock example.com na vaga original', async ({ page }) => {
+  // Antes este teste só empurrava uma annotation e não tinha asserção nenhuma:
+  // passava com qualquer href, inclusive nenhum. Agora verifica de ponta a ponta
+  // que o link do histórico chega íntegro ao DOM (API -> types.ts -> VagaCard).
+  test('link da vaga chega ao DOM exatamente como está no histórico', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
-    await firstJobButton(page).click();
+    await sortSelect(page).selectOption({ label: 'Maior score' });
 
     const link = firstJobCard(page).getByRole('link', { name: 'Vaga original' });
     const href = await link.getAttribute('href');
 
+    expect(href).toBe('https://example.com/vaga/abc');
+
     // Comparação por substring (`href.includes('example.com')`) também
     // casaria hosts como "example.com.attacker.net" ou "notexample.com" —
     // aqui exige-se igualdade exata ou sufixo ".example.com" no hostname.
-    let hostname: string | null = null;
-    try {
-      hostname = href ? new URL(href).hostname : null;
-    } catch {
-      hostname = null;
-    }
-    const isExampleFixture =
-      hostname === 'example.com' || hostname?.endsWith('.example.com');
+    const hostname = new URL(href!).hostname;
+    expect(hostname === 'example.com' || hostname.endsWith('.example.com')).toBe(true);
 
-    if (isExampleFixture) {
-      test.info().annotations.push({
-        type: 'warning',
-        description:
-          'A vaga usa example.com; isso parece fixture/mock e não uma URL real.',
-      });
-    }
+    // abrir em nova aba sem rel=noreferrer vaza a origem via window.opener
+    await expect(link).toHaveAttribute('rel', /noreferrer/);
   });
 
   test('permite percorrer todos os status disponíveis', async ({ page }) => {
@@ -224,22 +226,26 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     }
   });
 
-  test('mudança de status atualiza o dashboard', async ({ page }) => {
+  test('mudança de status incrementa o contador do dashboard', async ({ page }) => {
     await page.getByRole('button', { name: 'Todas' }).click();
-    await firstJobButton(page).click();
+    await sortSelect(page).selectOption({ label: 'Maior score' });
 
     const status = firstStatusSelect(page);
-    const original = await status.inputValue();
+
+    // Parte de um estado conhecido: se a vaga já estivesse "aplicado", marcar
+    // "Aplicado" de novo não mudaria contador nenhum e o teste passaria à toa.
+    await status.selectOption({ label: 'Novo' });
+    await expect(status).toHaveValue(STATUS_POR_ROTULO.Novo);
+    const antes = await statValue(page, 'Aplicadas');
 
     await status.selectOption({ label: 'Aplicado' });
 
-    const main = await page.locator('main').innerText();
-    expect(main).toMatch(/\d+\s*Aplicadas/i);
+    // A regex antiga (/\d+\s*Aplicadas/) casava com "0 Aplicadas" e portanto
+    // passava mesmo se o contador nunca subisse.
+    await expect.poll(() => statValue(page, 'Aplicadas')).toBe(antes + 1);
+    await expect(status).toHaveValue(STATUS_POR_ROTULO.Aplicado);
 
-    // tenta restaurar o estado para reduzir efeitos colaterais
-    if (original) {
-      await status.selectOption(original).catch(() => {});
-    }
+    await status.selectOption({ label: 'Novo' });
   });
 
   test('status persiste após reload quando a aplicação oferece persistência', async ({ page }) => {
