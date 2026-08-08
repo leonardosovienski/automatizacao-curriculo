@@ -37,6 +37,7 @@ from triagem.buscador import (
     _fonte_estruturada,
     _host_de_anuncio,
     _host_e_seguro,
+    _host_em,
     _inspecionar_link,
     _limpar_url,
     _local_declarado_incompativel,
@@ -2213,3 +2214,42 @@ def test_peso_fora_da_faixa_e_recusado(texto):
     """Só a soma era validada: pesos negativos passavam desde que somassem 1.0."""
     with pytest.raises(ValueError, match="fora da faixa"):
         parse_pesos(texto)
+
+
+# ------------------------------------------------- casamento de host por domínio
+
+def test_host_em_exige_dominio_e_nao_substring():
+    """Regressão: `portal in host` casava host hostil que apenas CONTÉM o portal.
+
+    `_localizacao_compativel` usava substring em dois pontos, então
+    `catho.com.br.attacker.net` era tratado como portal brasileiro e a vaga
+    passava no filtro de localização — entrando na análise paga. O padrão seguro
+    já existia no arquivo, reimplementado à mão em cinco lugares; dois erraram.
+    """
+    portais = ("catho.com.br", "gupy.io")
+
+    assert _host_em("catho.com.br", portais)
+    assert _host_em("www.catho.com.br", portais)
+    assert _host_em("br.catho.com.br", portais)
+
+    assert not _host_em("catho.com.br.attacker.net", portais)
+    assert not _host_em("notcatho.com.br", portais)
+    assert not _host_em("evil-catho.com.br.attacker.net", portais)
+    assert not _host_em("gupy.io.evil.com", portais)
+    assert not _host_em("", portais)
+    assert not _host_em("catho.com.br", ())
+
+
+def test_localizacao_nao_aceita_host_que_so_imita_portal_brasileiro():
+    """O caminho de ponta a ponta do mesmo bug, não só o helper.
+
+    Vaga com restrição explícita aos EUA hospedada num host que imita portal
+    brasileiro: sob a checagem por substring o `.br` do nome imitado bastava
+    para liberar; agora o filtro de residência decide.
+    """
+    imitando = _vaga(
+        "DevOps Engineer Junior",
+        link="https://catho.com.br.attacker.net/vagas/anuncio-12345",
+        descricao="Remote role, US only. Must be located in the United States to apply.",
+    )
+    assert not _localizacao_compativel(imitando)
