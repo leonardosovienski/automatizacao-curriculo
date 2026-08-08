@@ -36,7 +36,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-LOCK = FileLock(str(historico.ARQUIVO) + ".lock")
+LOCK = FileLock(str(historico.caminho_lock()))
+
+# Quanto o PATCH espera pelo lock antes de devolver 409. Configurável para que a
+# espera não vire tempo morto na suíte de testes (e para dar uma alavanca a quem
+# roda a CLI e a API lado a lado em máquina lenta).
+LOCK_TIMEOUT_S = float(os.environ.get("TRIAGEM_API_LOCK_TIMEOUT", "5"))
 
 
 class DimensaoResumo(BaseModel):
@@ -72,6 +77,21 @@ class AtualizarStatusPayload(BaseModel):
     status: str
 
 
+def _carregar_historico() -> Dict[str, dict]:
+    """`historico.carregar()` com o erro de leitura traduzido para HTTP.
+
+    Um `historico.json` corrompido ou editado à mão faz `carregar()` levantar
+    ValueError (com dica do .bak). Sem esta tradução o erro subia como 500 cru
+    em toda rota de leitura, escondendo do frontend a única informação útil:
+    que o problema é o arquivo, não a API. 503 porque é condição de servidor,
+    transitória e resolvível — o cliente não tem o que corrigir na requisição.
+    """
+    try:
+        return historico.carregar()
+    except ValueError as e:
+        raise HTTPException(503, str(e)) from e
+
+
 def _para_resumo(vid: str, entrada: dict) -> VagaResumo:
     analise = entrada.get("analise") or {}
     notas_raw = analise.get("notas") or None
@@ -102,7 +122,7 @@ def health():
 
 @app.get("/api/stats")
 def estatisticas():
-    hist = historico.carregar()
+    hist = _carregar_historico()
     contagem = {s: 0 for s in historico.STATUS_VALIDOS}
     for entrada in hist.values():
         status = entrada.get("status", "novo")
@@ -112,7 +132,7 @@ def estatisticas():
 
 @app.get("/api/vagas", response_model=List[VagaResumo])
 def listar_vagas(status: Optional[str] = None):
-    hist = historico.carregar()
+    hist = _carregar_historico()
     if status is not None and status not in historico.STATUS_VALIDOS:
         raise HTTPException(400, f"Status inválido: '{status}'.")
     resumos = [_para_resumo(vid, entrada) for vid, entrada in hist.items()]
@@ -124,7 +144,7 @@ def listar_vagas(status: Optional[str] = None):
 
 @app.get("/api/vagas/{vaga_id}", response_model=VagaResumo)
 def obter_vaga(vaga_id: str):
-    hist = historico.carregar()
+    hist = _carregar_historico()
     if vaga_id not in hist:
         raise HTTPException(404, f"Vaga '{vaga_id}' não encontrada.")
     return _para_resumo(vaga_id, hist[vaga_id])
@@ -133,8 +153,8 @@ def obter_vaga(vaga_id: str):
 @app.patch("/api/vagas/{vaga_id}/status", response_model=VagaResumo)
 def atualizar_status(vaga_id: str, payload: AtualizarStatusPayload):
     try:
-        with LOCK.acquire(timeout=5):
-            hist = historico.carregar()
+        with LOCK.acquire(timeout=LOCK_TIMEOUT_S):
+            hist = _carregar_historico()
             vid = historico.atualizar_status(hist, vaga_id, payload.status)
             historico.salvar(hist)
     except Timeout as e:

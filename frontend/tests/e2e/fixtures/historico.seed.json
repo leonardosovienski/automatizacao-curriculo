@@ -4,7 +4,7 @@
         "status": "novo",
         "score_final": 95.0,
         "pipeline_version": 2,
-        "texto": "Vaga: Platform Engineer Intern\nEmpresa: GlobalSoft\nLocal: Remoto (Brasil)\nDescri\u00e7\u00e3o: Est\u00e1gio em Platform Engineering. Backstage, Kubernetes, GitHub Actions, Python. Time distribu\u00eddo, documenta\u00e7\u00e3o e dailies em ingl\u00eas. Link: https://example.com/vaga/abc",
+        "texto": "Vaga: Platform Engineer Intern\nEmpresa: GlobalSoft\nLocal: Remoto (Brasil)\nDescrição: Estágio em Platform Engineering. Backstage, Kubernetes, GitHub Actions, Python. Time distribuído, documentação e dailies em inglês. Link: https://example.com/vaga/abc",
         "analise": {
             "titulo_normalizado": "Platform Engineer Intern",
             "empresa": "GlobalSoft",
@@ -27,11 +27,11 @@
             "notas": {
                 "d1_crescimento": {
                     "nota": 9,
-                    "justificativa": "Stack altamente relevante para o mercado atual e oportunidade de atua\u00e7\u00e3o em time distribu\u00eddo."
+                    "justificativa": "Stack altamente relevante para o mercado atual e oportunidade de atuação em time distribuído."
                 },
                 "d2_regime_localizacao": {
                     "nota": 10,
-                    "justificativa": "Vaga remota com abrang\u00eancia nacional, condizente com a localiza\u00e7\u00e3o do candidato."
+                    "justificativa": "Vaga remota com abrangência nacional, condizente com a localização do candidato."
                 },
                 "d3_stack_fit": {
                     "nota": 9,
@@ -39,32 +39,32 @@
                 },
                 "d4_ingles": {
                     "nota": 10,
-                    "justificativa": "Uso di\u00e1rio exigido para documenta\u00e7\u00e3o e dailies, ideal para o n\u00edvel de flu\u00eancia do candidato."
+                    "justificativa": "Uso diário exigido para documentação e dailies, ideal para o nível de fluência do candidato."
                 },
                 "d5_nivel_real": {
                     "nota": 10,
-                    "justificativa": "O n\u00edvel de est\u00e1gio est\u00e1 claramente definido e condizente com as atribui\u00e7\u00f5es esperadas."
+                    "justificativa": "O nível de estágio está claramente definido e condizente com as atribuições esperadas."
                 }
             },
             "alertas": []
         }
     },
     "d51c4d0c13": {
-        "analisado_em": "2026-08-07T23:02:20",
+        "analisado_em": "2026-08-06T10:15:00",
         "status": "descartada",
         "score_final": null,
         "pipeline_version": 2,
-        "texto": "Vaga: Desenvolvedor Java S\u00eanior\nEmpresa: ConsultCo\nLocal: Presencial em Florian\u00f3polis/SC\nDescri\u00e7\u00e3o: 5+ anos de experi\u00eancia em Java, Spring Boot e microsservi\u00e7os. Link: https://example.com/vaga/def",
+        "texto": "Vaga: Desenvolvedor Java Sênior\nEmpresa: ConsultCo\nLocal: Presencial em Florianópolis/SC\nDescrição: 5+ anos de experiência em Java, Spring Boot e microsserviços. Link: https://example.com/vaga/def",
         "analise": {
-            "titulo_normalizado": "Desenvolvedor Java S\u00eanior",
+            "titulo_normalizado": "Desenvolvedor Java Sênior",
             "empresa": "ConsultCo",
             "regime": "presencial",
-            "localizacao": "Florian\u00f3polis/SC",
+            "localizacao": "Florianópolis/SC",
             "nivel_real": "senior",
             "stack_exigida": [
                 "Java",
                 "Spring Boot",
-                "microsservi\u00e7os"
+                "microsserviços"
             ],
             "stack_desejavel": [],
             "idioma_trabalho": "pt",
@@ -72,9 +72,62 @@
             "origem": "outro",
             "publicada_em": "",
             "descartada": true,
-            "motivo_descarte": "Regime presencial fora de Curitiba ou Arauc\u00e1ria e n\u00edvel s\u00eanior incompat\u00edvel com o perfil.",
+            "motivo_descarte": "Regime presencial fora de Curitiba ou Araucária e nível sênior incompatível com o perfil.",
             "notas": null,
             "alertas": []
+        }
+    },
+    "a3c9e21b74": {
+        "analisado_em": "2026-08-08T09:30:00",
+        "status": "novo",
+        "score_final": 72.0,
+        "pipeline_version": 2,
+        "texto": "Vaga: Backend Engineer Pleno\nEmpresa: DataForge\nLocal: Híbrido (Curitiba/PR)\nDescrição: Python, FastAPI e PostgreSQL. Link: https://example.com/vaga/ghi",
+        "analise": {
+            "titulo_normalizado": "Backend Engineer Pleno",
+            "empresa": "DataForge",
+            "regime": "hibrido",
+            "localizacao": "Curitiba/PR",
+            "nivel_real": "pleno_disfarcado",
+            "stack_exigida": [
+                "Python",
+                "FastAPI",
+                "PostgreSQL"
+            ],
+            "stack_desejavel": [
+                "Docker"
+            ],
+            "idioma_trabalho": "pt",
+            "link": "https://exemplo-real.test/vaga/ghi",
+            "origem": "outro",
+            "publicada_em": "",
+            "descartada": false,
+            "motivo_descarte": null,
+            "notas": {
+                "d1_crescimento": {
+                    "nota": 7,
+                    "justificativa": "Produto consolidado, com espaço de crescimento moderado."
+                },
+                "d2_regime_localizacao": {
+                    "nota": 8,
+                    "justificativa": "Híbrido em Curitiba, dentro do raio aceito pelo perfil."
+                },
+                "d3_stack_fit": {
+                    "nota": 8,
+                    "justificativa": "Python e FastAPI são centrais no perfil do candidato."
+                },
+                "d4_ingles": {
+                    "nota": 5,
+                    "justificativa": "Inglês apenas para leitura de documentação."
+                },
+                "d5_nivel_real": {
+                    "nota": 6,
+                    "justificativa": "Pleno declarado, com atribuições compatíveis."
+                }
+            },
+            "alertas": [
+                "Faixa salarial não informada"
+            ]
         }
     }
 }

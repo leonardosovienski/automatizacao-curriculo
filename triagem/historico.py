@@ -30,6 +30,22 @@ def aplicar_config_do_ambiente() -> None:
     ARQUIVO = Path(os.environ.get("TRIAGEM_HISTORICO") or PADRAO)
 
 
+def caminho_lock() -> Path:
+    """Arquivo de lock que serializa as escritas no histórico.
+
+    Fonte única de propósito: a CLI (`triagem/cli.py`) e a API (`api/app.py`)
+    precisam disputar o MESMO arquivo. Enquanto cada lado montava o caminho por
+    conta própria, a CLI usava `ARQUIVO.with_suffix(".lock")` e a API usava
+    `str(ARQUIVO) + ".lock"` — `with_suffix` *substitui* a extensão em vez de
+    acrescentá-la, então os dois travavam arquivos diferentes
+    (`historico.lock` vs. `historico.json.lock`) e não se excluíam. O resultado
+    era perda silenciosa de atualização: um `triar analisar` concorrente com um
+    PATCH da interface web sobrescrevia o status recém-gravado, porque ambos
+    fazem read-modify-write do dicionário inteiro.
+    """
+    return ARQUIVO.with_name(ARQUIVO.name + ".lock")
+
+
 def gerar_id(texto: str) -> str:
     """ID estável da vaga: hash do texto normalizado (espaços/caixa ignorados)."""
     normalizado = " ".join(texto.lower().split())

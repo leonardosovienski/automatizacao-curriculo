@@ -133,7 +133,7 @@ def main() -> int:
     # Serializa comandos do CLI. Sem lock, duas execuções fazem read-modify-write
     # sobre JSONs diferentes e a última apaga o estado gravado pela primeira.
     historico.ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(historico.ARQUIVO.with_suffix(".lock")), timeout=2)
+    lock = FileLock(str(historico.caminho_lock()), timeout=2)
     try:
         with lock:
             if args.comando == "buscar":
