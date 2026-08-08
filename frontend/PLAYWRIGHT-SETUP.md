@@ -5,6 +5,9 @@ filtros, busca, ordenação, expansão de vaga, troca/persistência de status, o
 ajuda, rota inexistente, ausência de erros de console/JS/HTTP 5xx, acessibilidade (Axe) e
 responsividade — em desktop e mobile.
 
+Estado validado na `main` em 2026-08-08: **42/42 testes aprovados** localmente e no gate
+E2E do GitHub Actions.
+
 **A suíte é auto-contida**: o Playwright sobe API e Vite sozinho, com um
 `historico.json` isolado e populado a partir de um fixture estático (ver
 `api/seed_e2e.py` e `tests/e2e/fixtures/historico.seed.json`) — não toca no

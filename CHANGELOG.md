@@ -3,11 +3,13 @@
 Todas as mudanças relevantes deste projeto. O formato segue
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
-## [Não publicado] — revisão independente e primeira busca com dados reais
+## [Estado atual — `main` em 2026-08-08] — revisão independente e validação real
 
 Revisão feita do zero em 2026-08-08, seguida da primeira execução do pipeline com dados
-reais. Cinco defeitos encontrados. **Nenhum deles teria surgido de escrever mais teste** —
-vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
+reais. O conjunto foi incorporado pelos PRs #36 e #37 e validado novamente na `main`, no
+commit `cc06320`. Não há bloqueios técnicos conhecidos e somente a branch `main` permanece.
+Os defeitos foram encontrados lendo o código, rodando o sistema e reparando em detalhes
+fora do lugar.
 
 ### Corrigido
 
@@ -75,8 +77,9 @@ vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
   erro e o *checkpoint* que impede um Ctrl+C no retry de descartar análises já pagas.
 - **Toda correção validada por mutação**: quebrar o código de propósito e confirmar que o
   teste fica vermelho. Em dois casos, um teste recém-escrito passava com o bug.
-- 306 → **348 testes**; cobertura 76.33% → **80.57%**; `api/app.py` a 100%;
-  `triagem/cli.py` de 44% para 56%.
+- 306 → **354 testes**; cobertura 76,33% → **83,08%**; `api/app.py` a 100%.
+- Validação final pós-merge: CI em Python 3.10/3.12/3.13, lint e build do frontend,
+  42 testes E2E em desktop/mobile, Dependency Review e CodeQL aprovados.
 
 ### Adicionado
 
