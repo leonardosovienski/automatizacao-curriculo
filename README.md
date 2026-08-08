@@ -285,8 +285,8 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São **348 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
-(hoje em 80.5%). Cobrem parse do input, regra fixa do D2, score composto,
+São **352 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
+(hoje em 82.7%). Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
 internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de
@@ -338,7 +338,8 @@ diagnóstico informa **qual credencial chegou e por qual nome**, que é o que se
 > ⚠ Em repositório **público**, logs e artefatos do Actions são visíveis a qualquer pessoa
 > — inclusive as vagas, scores e justificativas do escopo `buscar`. O CV nunca é impresso e
 > seus blocos `<!-- PRIVADO -->` são removidos antes da API, mas se a exposição dos
-> resultados incomodar, torne o repositório privado.
+> resultados incomodar, torne o repositório privado. O artefato `resultado-busca` expira
+> em **3 dias** para reduzir a janela de exposição; os logs do run continuam públicos.
 
 ## Interface web (opcional)
 
@@ -347,6 +348,10 @@ Além da CLI, o histórico pode ser navegado por uma interface web: `api/app.py`
 React/Vite/Tailwind para essa API. Ver [frontend/README.md](frontend/README.md) para
 instruções. É opcional — a CLI continua sendo a única forma de rodar
 `buscar`/`analisar`/`cv`.
+
+> **Atenção:** a API não tem autenticação e o `PATCH` altera estado. Rode-a somente em
+> `127.0.0.1`; não exponha a porta na rede, em túnel ou proxy público sem autenticação e
+> HTTPS adicionais.
 
 **A API e a CLI compartilham o mesmo lock de arquivo** (`historico.caminho_lock()`), então
 usar as duas ao mesmo tempo não perde escrita. Um `historico.json` ilegível vira **503** com

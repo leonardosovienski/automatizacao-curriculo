@@ -35,6 +35,8 @@ busca_jooble.md
 .test-run*/
 .ruff_cache/
 *.egg-info/
+/build/
+/dist/
 .smoke/
 .simulacao/
 # CV real contém telefone/e-mail pessoais; versione só o template .exemplo.md

@@ -305,6 +305,14 @@ def resolver_id(historico: dict, novo: Registro) -> Optional[str]:
     return None
 
 
+def resolver_registro(registros: Iterable[Registro], novo: Registro) -> Optional[str]:
+    """ID de uma vaga equivalente já aceita no lote atual, ou None."""
+    for antigo in registros:
+        if _mesma_vaga(antigo, novo):
+            return antigo.id
+    return None
+
+
 def agrupar(registros: Iterable[Registro]) -> list[list[Registro]]:
     """Agrupa duplicatas preservando a ordem de chegada.
 

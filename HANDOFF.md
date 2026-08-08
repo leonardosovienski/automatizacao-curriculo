@@ -25,6 +25,13 @@ detalhes fora do lugar.
   análise paga. Não era SSRF (`_host_e_seguro` segue barrando destino interno), mas custava
   chamada. O padrão seguro estava reimplementado à mão em **seis** lugares e duas cópias
   erraram; hoje existe `_host_em()` e ele é usado nas seis.
+- **Dedup não comparava vagas novas do mesmo lote.** No run `31240277177`, duas URLs da
+  Jooble para a mesma vaga da Solvd passaram juntas pela triagem paga: a cascata consultava
+  apenas o histórico carregado, ainda vazio para ambas. Empresa, título e localidade eram
+  idênticos, portanto a camada B deveria tê-las fundido. Agora cada item também é comparado
+  aos registros já aceitos no lote, e a URL perdedora continua preservada como alias.
+  Os veredictos opostos não vieram de não determinismo do modelo: os textos de origem eram
+  recortes diferentes; só o segundo continha explicitamente `5+ years`.
 
 Além disso, **seis dos 42 testes E2E passavam com a funcionalidade quebrada** — incluindo
 um sem asserção nenhuma e uma regex (`/^(\d{1,3})\b/` sobre `"95Platform…"`) que fazia o
@@ -46,7 +53,7 @@ bug — teste verde não é evidência até você tentar derrubá-lo.
 - Cache/API têm validação de contrato, versão de cache e circuit breaker apenas para falhas
   transitórias. O histórico é recalculado por `PIPELINE_VERSION`.
 - O CLI usa lock interprocesso, checkpoints de análise e código 2 para resultado parcial.
-- CI executa Ruff, compileall e **348 testes** (cobertura de branches ≥ 75%, hoje 80.5%),
+- CI executa Ruff, compileall e **352 testes** (cobertura de branches ≥ 75%, hoje 82.7%),
   lint+build do frontend e a suíte E2E Playwright como gate obrigatório de merge.
 
 CLI Python para triagem de vagas, histórico de candidaturas, exportação e geração de
