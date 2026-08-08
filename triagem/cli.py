@@ -382,7 +382,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
     vistos = set()
     registros_no_lote: List[dedup.Registro] = []
     aliases_pendentes: Dict[str, List[str]] = {}
-    historico_recalculado = False
+    historico_alterado = False
 
     for indice, texto in enumerate(textos):
         vid = historico.gerar_id(chaves[indice] if chaves else texto)
@@ -403,6 +403,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
                     aliases_pendentes.setdefault(existente, []).append(registros[indice].url)
                 else:
                     historico.registrar_alias(hist, existente, registros[indice].url)
+                    historico_alterado = True
                 vid = existente
         if vid in vistos:
             # Antes sumia em silêncio: o relatório dizia "TOTAL ANALISADAS: 1"
@@ -427,7 +428,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
                 or entrada.get("analise") != reaproveitado.analise.model_dump()
             ):
                 historico.registrar(hist, reaproveitado, entrada.get("texto", ""))
-                historico_recalculado = True
+                historico_alterado = True
             print(f"  [{vid}] {analise.empresa or '?'} - {analise.titulo_normalizado}: "
                   f"já no histórico (status: {entrada['status']}) — pulando. Use --reanalisar para refazer.")
         else:
@@ -491,7 +492,7 @@ def _cmd_analisar(args, textos=None, chaves=None, registros=None) -> int:
             print(f"Erro ao salvar histórico: {e}")
             return 1
 
-    elif historico_recalculado:
+    elif historico_alterado:
         try:
             historico.salvar(hist)
         except OSError as e:

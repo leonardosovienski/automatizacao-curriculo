@@ -285,8 +285,8 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São **352 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
-(hoje em 82.7%). Cobrem parse do input, regra fixa do D2, score composto,
+São **354 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
+(hoje em 83.08%). Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
 internacional), a alfândega de URL, a extração de `schema.org/JobPosting`, os conectores de

@@ -17,6 +17,11 @@ vieram de ler código, rodar o sistema e reparar em detalhes fora do lugar.
   histórico. A cascata agora compara também os registros já aceitos no lote e preserva a
   segunda URL como alias. O teste reproduz o par da Solvd do run `31240277177` e foi
   validado por mutação.
+- **Aliases de deduplicação podiam sumir do histórico.** Quando uma vaga já analisada
+  reaparecia por outra URL sem exigir recálculo, o alias era alterado apenas em memória e
+  nenhum salvamento acontecia. Quando havia recálculo, `historico.registrar()` substituía a
+  entrada e apagava aliases existentes. Os dois caminhos agora persistem e preservam as
+  URLs alternativas; ambos têm testes validados por mutação.
 - `_cmd_buscar`, `_cmd_sync_ats` e `_cmd_cv` passam a ter testes de orquestração com
   dublês, sem rede, LLM pago ou alteração do histórico real.
 - O artefato público `resultado-busca` passa de 14 para 3 dias de retenção, e a

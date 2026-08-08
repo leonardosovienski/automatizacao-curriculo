@@ -439,6 +439,72 @@ def test_vaga_ja_no_historico_nao_gasta_chamada(
     assert "já no histórico" in capsys.readouterr().out
 
 
+def test_alias_de_outra_fonte_e_persistido_sem_reanalise(
+    ambiente, monkeypatch
+):
+    """Regressão do run 31247664139: alias ficava apenas em memória.
+
+    Quando a análise existente não precisava ser recalculada e não havia vaga
+    pendente, nenhum dos blocos de salvamento era executado.
+    """
+    historico.aplicar_config_do_ambiente()
+    url_original = "https://jooble.org/jdp/1"
+    url_alias = "https://jooble.org/jdp/2"
+    origem = {
+        "titulo": "Cloud/DevOps Engineer",
+        "empresa": "Solvd",
+        "descricao": "Descrição original suficientemente longa para a vaga.",
+        "link": url_original,
+        "origem": "jooble",
+        "publicada_em": "2026-08-05",
+        "localizacao": "Brazil",
+        "confianca_empresa": "alta",
+    }
+    entrada = _entrada(empresa="Solvd", titulo="Cloud/DevOps Engineer")
+    entrada["texto"] = json.dumps(origem)
+    entrada["analise"] = _analise(
+        empresa="Solvd", titulo="Cloud/DevOps Engineer"
+    ).model_dump()
+    entrada["analise"].update({
+        "regime": "indefinido",
+        "localizacao": "Brazil",
+        "link": url_original,
+        "origem": "jooble",
+        "publicada_em": "2026-08-05",
+    })
+    materializada = cli.pontuar(
+        AnaliseVaga.model_validate(entrada["analise"]), "existente01"
+    )
+    entrada["analise"] = materializada.analise.model_dump()
+    entrada["score_final"] = materializada.score_final
+    _escrever(ambiente, {"existente01": entrada})
+    novo_texto = json.dumps({**origem, "link": url_alias, "publicada_em": "2026-07-31"})
+    novo = dedup.Registro(
+        "", url_alias, "Solvd", "Cloud/DevOps Engineer",
+        confianca="alta", idade_dias=8, localidade="Brazil",
+    )
+
+    assert cli._cmd_analisar(
+        _args_analisar(), textos=[novo_texto], chaves=[url_alias], registros=[novo]
+    ) == 0
+
+    assert _ler(ambiente)["existente01"]["aliases"] == [url_alias]
+
+
+def test_recalculo_do_historico_preserva_aliases():
+    vaga = cli.pontuar(_analise(empresa="Solvd"), "existente01")
+    hist = {
+        "existente01": {
+            "status": "novo",
+            "aliases": ["https://jooble.org/jdp/2"],
+        },
+    }
+
+    historico.registrar(hist, vaga, "texto atualizado")
+
+    assert hist["existente01"]["aliases"] == ["https://jooble.org/jdp/2"]
+
+
 def test_reanalisar_forca_nova_chamada(ambiente, monkeypatch, gemini_falso):
     chamadas, instalar = gemini_falso
     instalar(lambda texto, n: _analise())
