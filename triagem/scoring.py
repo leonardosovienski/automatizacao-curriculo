@@ -2,6 +2,7 @@
 
 from typing import Dict, Optional
 
+from . import perfil_usuario
 from .schema import AnaliseVaga, VagaPontuada
 
 PESOS = {
@@ -55,12 +56,22 @@ def _fora_do_raio(localizacao: str) -> bool:
         .replace("ó", "o").replace("ô", "o").replace("õ", "o").replace("ú", "u")
         .replace("ç", "c")
     )
-    if any(cidade in sem_acento for cidade in CIDADES_ACEITAS):
+    cidades = tuple(_sem_acento(c) for c in perfil_usuario.atual().cidades_aceitas)
+    if any(cidade in sem_acento for cidade in cidades):
         return False
     if any(termo and termo in sem_acento for termo in LOCAL_SEM_PRACA):
         return False
     # Sobrou uma praça específica que não é nenhuma das aceitas.
     return True
+
+
+def _sem_acento(texto: str) -> str:
+    return (
+        texto.lower().replace("á", "a").replace("ã", "a").replace("â", "a")
+        .replace("é", "e").replace("ê", "e").replace("í", "i")
+        .replace("ó", "o").replace("ô", "o").replace("õ", "o").replace("ú", "u")
+        .replace("ç", "c")
+    )
 
 
 def parse_pesos(texto: str) -> Dict[str, float]:
@@ -102,7 +113,7 @@ def pontuar(
     analise: AnaliseVaga, vid: str = "", pesos: Optional[Dict[str, float]] = None
 ) -> VagaPontuada:
     """Devolve a vaga pontuada; score_final fica None quando descartada."""
-    pesos = pesos or PESOS
+    pesos = pesos or perfil_usuario.atual().pesos
     # Evita que a regra determinística altere o objeto retornado pela API ou
     # reutilizado pelo chamador.
     analise = analise.model_copy(deep=True)

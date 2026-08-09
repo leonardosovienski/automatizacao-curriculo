@@ -9,6 +9,7 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
+from . import perfil_usuario
 from .schema import AnaliseVaga
 
 # Erros transitórios da API: cota por minuto, indisponibilidade, timeout de gateway.
@@ -38,7 +39,8 @@ SCHEMA_ANALISE = AnaliseVaga.model_json_schema()
 
 @lru_cache(maxsize=1)
 def system_prompt() -> str:
-    return (_PROMPTS_DIR / "system_prompt.md").read_text(encoding="utf-8")
+    template = (_PROMPTS_DIR / "system_prompt.md").read_text(encoding="utf-8")
+    return perfil_usuario.atual().bloco_prompt() + template
 
 
 @lru_cache(maxsize=1)

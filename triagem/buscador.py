@@ -31,7 +31,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from . import alvos_ats, ats, cache, replay
+from . import alvos_ats, ats, cache, perfil_usuario, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
@@ -324,6 +324,18 @@ def _contem_termo(texto: str, termos: tuple[str, ...]) -> bool:
     return any(re.search(rf"(?<!\w){re.escape(termo)}(?!\w)", texto) for termo in termos)
 
 
+def _termos_alvo() -> tuple[str, ...]:
+    return tuple(_normalizar(t) for t in perfil_usuario.atual().areas)
+
+
+def _termos_entrada() -> tuple[str, ...]:
+    return tuple(_normalizar(t) for t in perfil_usuario.atual().senioridades)
+
+
+def _cidades_aceitas() -> tuple[str, ...]:
+    return tuple(_normalizar(c) for c in perfil_usuario.atual().cidades_aceitas)
+
+
 def _normalizar_com_indices(texto: str) -> tuple[str, list[int]]:
     """`_normalizar`, mas devolvendo o índice de origem de cada caractere.
 
@@ -557,13 +569,13 @@ def _pontuacao_preliminar(vaga: VagaEncontrada) -> int:
         return -100
 
     pontos = 0
-    if _contem_termo(conteudo, TERMOS_ALVO):
+    if _contem_termo(conteudo, _termos_alvo()):
         pontos += 8
-    if _contem_termo(titulo, TERMOS_ALVO):
+    if _contem_termo(titulo, _termos_alvo()):
         pontos += 5
-    if _contem_termo(conteudo, TERMOS_ENTRADA):
+    if _contem_termo(conteudo, _termos_entrada()):
         pontos += 6
-    if _contem_termo(titulo, TERMOS_ENTRADA):
+    if _contem_termo(titulo, _termos_entrada()):
         pontos += 5
     if _contem_termo(conteudo, TERMOS_LOCAL):
         pontos += 3
@@ -612,12 +624,12 @@ def _area_alvo(vaga: VagaEncontrada) -> bool:
     checagem no texto inteiro entraram na triagem paga "Talent Sourcer", "Data
     Scientist" e "Data Engineer" só porque a descrição citava cloud.
     """
-    return _contem_termo(_normalizar(vaga.titulo), TERMOS_ALVO)
+    return _contem_termo(_normalizar(vaga.titulo), _termos_alvo())
 
 
 def _chave_semantica(vaga: VagaEncontrada) -> tuple[str, str]:
     titulo = _normalizar(vaga.titulo)
-    for termo in TERMOS_ENTRADA + TERMOS_SENIOR:
+    for termo in _termos_entrada() + TERMOS_SENIOR:
         titulo = re.sub(rf"(?<!\w){re.escape(termo)}(?!\w)", " ", titulo)
     return (" ".join(titulo.split()), _normalizar(vaga.empresa))
 
@@ -671,7 +683,7 @@ def _local_declarado_incompativel(vaga: VagaEncontrada) -> bool:
     local = _normalizar(vaga.localizacao)
     if _remoto_afirmado(_normalizar(vaga.titulo)):
         return False
-    if not local or _contem_termo(local, CIDADES_ACEITAS):
+    if not local or _contem_termo(local, _cidades_aceitas()):
         return False
     especifico = [palavra for palavra in local.split() if palavra not in LOCAL_GENERICO]
     if not especifico:
@@ -697,7 +709,7 @@ def _localizacao_compativel(vaga: VagaEncontrada) -> bool:
         return aceita_br
     if host.endswith(".br") or _host_em(host, PORTAIS_BRASILEIROS):
         return True
-    if _contem_termo(conteudo, CIDADES_ACEITAS):
+    if _contem_termo(conteudo, _cidades_aceitas()):
         return True
     if _dominio_e(host, "linkedin.com") and not host.startswith("br."):
         return aceita_br
@@ -1701,6 +1713,10 @@ def _normalizar_texto_livre(
     log: Log = _sem_log,
 ) -> list[VagaEncontrada]:
     """Só o texto livre passa pelo modelo — e item inválido não derruba o lote."""
+    perfil = perfil_usuario.atual()
+    areas = ", ".join(perfil.areas)
+    niveis = ", ".join(perfil.senioridades)
+    cidades = ", ".join(perfil.cidades_aceitas)
     resposta = gerar_com_retentativa(
         client,
         model=MODELOS[modelo_analise],
@@ -1708,8 +1724,8 @@ def _normalizar_texto_livre(
             f"Converta os resultados abaixo em até {limite_coleta} vagas candidatas. "
             "DESCARTE antes de responder: Sênior/Sr, Pleno, Staff, Lead, Principal, "
             "Arquiteto, Especialista, Gerente, vagas que exijam 3+ anos e áreas sem "
-            "relação com DevOps/DevSecOps/Cloud/Platform/SRE/C#/.NET. Priorize Estágio, "
-            "Trainee, Júnior/Jr, remoto Brasil e Curitiba/Araucária. Inclua somente "
+            f"relação com as áreas configuradas: {areas}. Priorize as senioridades "
+            f"configuradas ({niveis}), remoto em {perfil.pais} e as cidades {cidades}. Inclua somente "
             "anúncios específicos com URL HTTP(S), copie a localização declarada no "
             "anúncio para o campo `localizacao`, preserve requisitos e não invente "
             "informações. Deixe `localizacao` VAZIO quando o anúncio não declarar a "

@@ -35,6 +35,40 @@ export interface Stats {
   por_status: Record<Status, number>;
 }
 
+export interface PerfilUsuario {
+  versao: number;
+  nome: string;
+  pais: string;
+  cidades_aceitas: string[];
+  aceita_remoto: boolean;
+  aceita_hibrido: boolean;
+  aceita_presencial: boolean;
+  areas: string[];
+  senioridades: string[];
+  tecnologias: string[];
+  idiomas: string[];
+  pesos: Record<string, number>;
+  cv_base: string;
+  consentimento_ia: boolean;
+  onboarding_concluido: boolean;
+}
+
+export interface EstadoOnboarding {
+  concluido: boolean;
+  consentimento_ia: boolean;
+  cv_configurado: boolean;
+}
+
+export interface UsuarioSessao { id: string; email: string }
+export interface Sessao { usuario: UsuarioSessao }
+
+export type EstadoBusca = "pendente" | "processando" | "concluida" | "falhou";
+export interface BuscaVagas {
+  id: string; pedido: string; limite: number; estado: EstadoBusca;
+  progresso: number; mensagem: string; erro: string | null;
+  encontradas: number; criada_em: string; concluida_em: string | null;
+}
+
 export const STATUS_LABEL: Record<Status, string> = {
   novo: "Novo",
   aplicado: "Aplicado",

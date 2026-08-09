@@ -44,7 +44,7 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     }
 
     await expect(
-      page.getByRole('button', { name: 'Como popular o histórico' })
+      page.getByRole('button', { name: 'Como buscar vagas' })
     ).toBeVisible();
   });
 
@@ -276,9 +276,9 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
     }
   });
 
-  test('ajuda Como popular o histórico abre conteúdo útil', async ({ page }) => {
+  test('ajuda Como buscar vagas abre conteúdo útil', async ({ page }) => {
     const button = page.getByRole('button', {
-      name: 'Como popular o histórico',
+      name: 'Como buscar vagas',
     });
 
     await button.click();

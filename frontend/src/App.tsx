@@ -1,12 +1,14 @@
-import { CheckCircle2, HelpCircle, Search } from "lucide-react";
+import { CheckCircle2, HelpCircle, Search, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { atualizarStatus, listarVagas, obterStats } from "./api";
+import { atualizarStatus, encerrarSessao, iniciarBusca, listarVagas, obterBusca, obterBuscaAtual, obterOnboarding, obterStats, obterUsuario } from "./api";
+import { AuthScreen } from "./components/AuthScreen";
 import { CardSkeleton } from "./components/CardSkeleton";
 import { Modal } from "./components/Modal";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import { StatsBar } from "./components/StatsBar";
 import { Toast } from "./components/Toast";
 import { VagaCard } from "./components/VagaCard";
-import { STATUS_LABEL, type Stats, type Status, type VagaResumo } from "./types";
+import { STATUS_LABEL, type BuscaVagas, type Stats, type Status, type VagaResumo } from "./types";
 
 const FILTROS: (Status | "todas")[] = [
   "todas",
@@ -42,7 +44,7 @@ function ordenar(vagas: VagaResumo[], ordenacao: Ordenacao): VagaResumo[] {
   }
 }
 
-export default function App() {
+function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [vagas, setVagas] = useState<VagaResumo[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [filtro, setFiltro] = useState<Status | "todas">("novo");
@@ -53,6 +55,38 @@ export default function App() {
   const [statsErro, setStatsErro] = useState(false);
   const [atualizandoId, setAtualizandoId] = useState<string | null>(null);
   const [ajudaAberta, setAjudaAberta] = useState(false);
+  const [configAberta, setConfigAberta] = useState(false);
+  const [configObrigatoria, setConfigObrigatoria] = useState(false);
+  const [pedidoBusca, setPedidoBusca] = useState("");
+  const [buscaAtual, setBuscaAtual] = useState<BuscaVagas | null>(null);
+  const [iniciandoBusca, setIniciandoBusca] = useState(false);
+  const [recarregar, setRecarregar] = useState(0);
+
+  useEffect(() => {
+    obterOnboarding()
+      .then((estado) => {
+        if (!estado.concluido) {
+          setConfigObrigatoria(true);
+          setConfigAberta(true);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    obterBuscaAtual().then(setBuscaAtual).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!buscaAtual || !["pendente", "processando"].includes(buscaAtual.estado)) return;
+    const timer = window.setTimeout(() => {
+      obterBusca(buscaAtual.id).then((atualizada) => {
+        setBuscaAtual(atualizada);
+        if (atualizada.estado === "concluida") setRecarregar((n) => n + 1);
+      }).catch(() => setErro("Não foi possível acompanhar a busca de vagas."));
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [buscaAtual]);
 
   useEffect(() => {
     // Mesma guarda do efeito de vagas abaixo: sem ela, uma resposta lenta de
@@ -93,7 +127,16 @@ export default function App() {
     return () => {
       cancelado = true;
     };
-  }, [filtro]);
+  }, [filtro, recarregar]);
+
+  async function handleIniciarBusca() {
+    setIniciandoBusca(true); setErro(null);
+    try { setBuscaAtual(await iniciarBusca(pedidoBusca)); }
+    catch (e: unknown) {
+      const detalhe = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+      setErro(detalhe ?? "Não foi possível iniciar a busca. Confira seu perfil e tente novamente.");
+    } finally { setIniciandoBusca(false); }
+  }
 
   async function handleStatusChange(id: string, status: Status) {
     setAtualizandoId(id);
@@ -137,8 +180,19 @@ export default function App() {
             </p>
           </div>
           <button
+            onClick={async () => { await encerrarSessao(); onLogout(); }}
+            className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-text"
+          >Sair</button>
+          <button
+            onClick={() => { setConfigObrigatoria(false); setConfigAberta(true); }}
+            aria-label="Configurações do perfil"
+            className="p-1.5 text-muted transition-colors hover:text-text"
+          >
+            <Settings size={20} />
+          </button>
+          <button
             onClick={() => setAjudaAberta(true)}
-            aria-label="Como popular o histórico"
+            aria-label="Como buscar vagas"
             className="p-1.5 text-muted transition-colors hover:text-text"
           >
             <HelpCircle size={20} />
@@ -150,6 +204,21 @@ export default function App() {
         <div className="mb-6">
           <StatsBar stats={stats} erro={statsErro} />
         </div>
+
+        <section className="mb-6 rounded-xl border border-border bg-surface p-4">
+          <h2 className="text-sm font-semibold text-text">Encontrar novas vagas</h2>
+          <p className="mt-1 text-xs text-muted">Descreva algo específico ou deixe em branco para usar as preferências do perfil.</p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input value={pedidoBusca} onChange={(e) => setPedidoBusca(e.target.value)} placeholder="Ex.: Python júnior remoto" aria-label="Preferências desta busca" className="min-w-0 flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none" />
+            <button onClick={handleIniciarBusca} disabled={iniciandoBusca || (!!buscaAtual && ["pendente", "processando"].includes(buscaAtual.estado))} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-bg disabled:cursor-not-allowed disabled:opacity-50">
+              {iniciandoBusca ? "Iniciando…" : "Buscar vagas"}
+            </button>
+          </div>
+          {buscaAtual && <div className="mt-3" role="status">
+            <div className="mb-1 flex justify-between text-xs text-muted"><span>{buscaAtual.erro ?? buscaAtual.mensagem}</span><span>{buscaAtual.progresso}%</span></div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-bg"><div className={`h-full transition-all ${buscaAtual.estado === "falhou" ? "bg-red-500" : "bg-accent"}`} style={{ width: `${buscaAtual.progresso}%` }} /></div>
+          </div>}
+        </section>
 
         <div className="mb-4 flex flex-wrap gap-2">
           {FILTROS.map((f) => (
@@ -214,9 +283,7 @@ export default function App() {
             </p>
             {!busca && (
               <p className="mt-1 text-xs text-muted">
-                Rode <code className="rounded bg-bg px-1.5 py-0.5">triar analisar</code>{" "}
-                ou <code className="rounded bg-bg px-1.5 py-0.5">triar buscar</code> para
-                popular o histórico.
+                Use o botão “Buscar vagas” acima para encontrar oportunidades.
               </p>
             )}
           </div>
@@ -239,24 +306,30 @@ export default function App() {
       {erro && <Toast message={erro} onDismiss={() => setErro(null)} />}
 
       <Modal
-        title="Como popular o histórico"
+        title="Como buscar vagas"
         open={ajudaAberta}
         onClose={() => setAjudaAberta(false)}
       >
         <div className="space-y-3 text-sm text-muted">
-          <p>
-            Esta tela só lê o <code className="rounded bg-bg px-1.5 py-0.5 text-text">historico.json</code> gerado pela CLI. Para popular ou atualizar vagas, rode no terminal:
-          </p>
-          <div className="space-y-2 rounded-md bg-bg p-3 font-mono text-xs text-text">
-            <p>triar buscar --limite 10</p>
-            <p>triar analisar vagas.json</p>
-          </div>
-          <p>
-            Trocar o status aqui (Aplicado, Entrevista, ...) grava direto no mesmo
-            arquivo usado pela CLI — os dois podem ser usados juntos com segurança.
-          </p>
+          <p>Complete seu perfil e currículo nas configurações. Depois, use “Buscar vagas”. O sistema consulta as fontes configuradas pelo operador, analisa as oportunidades e mostra os resultados neste painel.</p>
+          <p>Você não precisa instalar nada nem fornecer chaves de API. Pode atualizar cada vaga para Aplicado, Entrevista, Recusado ou Fechada.</p>
         </div>
       </Modal>
+      <OnboardingWizard
+        open={configAberta}
+        obrigatorio={configObrigatoria}
+        onClose={() => setConfigAberta(false)}
+        onComplete={() => setConfigObrigatoria(false)}
+      />
     </div>
   );
+}
+
+export default function App() {
+  const [autenticado, setAutenticado] = useState<boolean | null>(null);
+  useEffect(() => { obterUsuario().then(() => setAutenticado(true)).catch(() => setAutenticado(false)); }, []);
+  if (autenticado === null) return <div className="flex min-h-screen items-center justify-center text-sm text-muted">Carregando…</div>;
+  return autenticado
+    ? <Dashboard onLogout={() => setAutenticado(false)} />
+    : <AuthScreen onAuthenticated={() => setAutenticado(true)} />;
 }
