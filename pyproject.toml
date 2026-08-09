@@ -17,6 +17,13 @@ dependencies = [
     "python-dotenv>=1.2,<2",
     "fastapi>=0.118,<1",
     "uvicorn[standard]>=0.38,<1",
+    "keyring>=25,<26",
+    "sqlalchemy>=2,<3",
+    "psycopg[binary]>=3.2,<4",
+    "PyJWT>=2.10,<3",
+    "pwdlib[argon2]>=0.3,<1",
+    "email-validator>=2.2,<3",
+    "alembic>=1.16,<2",
 ]
 
 [project.optional-dependencies]
@@ -47,3 +54,6 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"api/*.py" = ["B008"]

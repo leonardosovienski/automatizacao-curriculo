@@ -16,6 +16,11 @@ export const statusLabels = Object.keys(
 ) as (keyof typeof STATUS_POR_ROTULO)[];
 
 export async function openApp(page: Page) {
+  const apiUrl = process.env.E2E_API_URL ?? 'http://127.0.0.1:8000';
+  const login = await page.request.post(`${apiUrl}/api/auth/login`, {
+    data: { email: 'e2e@example.com', senha: 'senha-e2e-123' },
+  });
+  expect(login.ok()).toBeTruthy();
   await page.goto('/');
   await expect(
     page.getByRole('heading', { name: 'Triagem de Vagas' })

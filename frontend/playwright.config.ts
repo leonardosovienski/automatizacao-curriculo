@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const e2eApiUrl = process.env.E2E_API_URL ?? 'http://127.0.0.1:8000';
+const e2eBaseUrl = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173';
+const e2eFrontendPort = process.env.E2E_FRONTEND_PORT ?? '5173';
+
 export default defineConfig({
   testDir: './tests/e2e',
   // O fixture (tests/e2e/fixtures/historico.seed.json) tem uma única vaga
@@ -25,7 +29,7 @@ export default defineConfig({
   timeout: 30_000,
 
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173',
+    baseURL: e2eBaseUrl,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -44,17 +48,18 @@ export default defineConfig({
           command: `${process.env.E2E_PYTHON ?? 'python'} api/seed_e2e.py`,
           cwd: '..',
           env: {
-            TRIAGEM_HISTORICO: '.e2e-historico.json',
-            E2E_API_PORT: '8000',
+            TRIAGEM_DATABASE: process.env.TRIAGEM_DATABASE ?? '.e2e.db',
+            E2E_API_PORT: process.env.E2E_API_PORT ?? '8000',
+            TRIAGEM_CORS_ORIGINS: e2eBaseUrl,
           },
-          url: 'http://127.0.0.1:8000/health',
+          url: `${e2eApiUrl}/health`,
           reuseExistingServer: !process.env.CI,
           timeout: 60_000,
         },
         {
-          command: 'npm run dev -- --host 127.0.0.1',
-          env: { VITE_API_URL: process.env.VITE_API_URL ?? 'http://127.0.0.1:8000' },
-          url: 'http://127.0.0.1:5173',
+          command: `npm run dev -- --host 127.0.0.1 --port ${e2eFrontendPort}`,
+          env: { VITE_API_URL: process.env.VITE_API_URL ?? e2eApiUrl },
+          url: e2eBaseUrl,
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,
         },

@@ -8,12 +8,23 @@ import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
-from . import alvos_ats, ats, cache, curriculo, dedup, historico, replay
+from . import (
+    alvos_ats,
+    ats,
+    cache,
+    credenciais,
+    curriculo,
+    dedup,
+    historico,
+    perfil_usuario,
+    replay,
+)
 from .analisador import MODELO_PADRAO, MODELOS, analisar_vaga, criar_cliente
 from .buscador import (
     _limpar_url,
@@ -31,7 +42,7 @@ from .relatorio import render_relatorio
 from .schema import AnaliseVaga, VagaPontuada
 from .scoring import parse_pesos, pontuar
 
-SUBCOMANDOS = {"buscar", "analisar", "historico", "status", "cv", "limpar-cache", "sync-ats"}
+SUBCOMANDOS = {"configurar", "perfil", "buscar", "analisar", "historico", "status", "cv", "limpar-cache", "sync-ats"}
 
 
 def _inteiro_positivo(valor: str) -> int:
@@ -55,7 +66,7 @@ def _montar_parser() -> argparse.ArgumentParser:
     bu.add_argument(
         "pedido",
         nargs="?",
-        default="Vagas de estágio ou Júnior em DevOps, DevSecOps ou C#/.NET, remotas no Brasil ou em Curitiba/Araucária",
+        default=None,
         help="O tipo de vaga desejado",
     )
     bu.add_argument("--limite", type=_inteiro_positivo, default=10, metavar="N")
@@ -102,6 +113,11 @@ def _montar_parser() -> argparse.ArgumentParser:
     cv.add_argument("--modelo", choices=MODELOS, default=MODELO_PADRAO)
     cv.add_argument("--saida", metavar="ARQ", help="Salva o material em arquivo .md")
 
+    co = sub.add_parser("configurar", help="Onboarding guiado do perfil do candidato")
+    co.add_argument("--arquivo", metavar="JSON", help="Importa uma configuração JSON")
+
+    sub.add_parser("perfil", help="Mostra a configuração ativa sem exibir chaves")
+
     return parser
 
 
@@ -129,6 +145,16 @@ def main() -> int:
     alvos_ats.aplicar_config_do_ambiente()
     replay.aplicar_config_do_ambiente()
     curriculo.aplicar_config_do_ambiente()
+    perfil_usuario.aplicar_config_do_ambiente()
+    credenciais.carregar_no_ambiente()
+    try:
+        perfil = perfil_usuario.carregar()
+    except ValueError as e:
+        print(f"Erro: {e}")
+        return 1
+    if not os.environ.get("TRIAGEM_CV_BASE"):
+        caminho_cv = Path(perfil.cv_base)
+        curriculo.CV_BASE = caminho_cv if caminho_cv.is_absolute() else perfil_usuario.ARQUIVO.parent / caminho_cv
 
     # Serializa comandos do CLI. Sem lock, duas execuções fazem read-modify-write
     # sobre JSONs diferentes e a última apaga o estado gravado pela primeira.
@@ -138,6 +164,10 @@ def main() -> int:
         with lock:
             if args.comando == "buscar":
                 return _cmd_buscar(args)
+            if args.comando == "configurar":
+                return _cmd_configurar(args)
+            if args.comando == "perfil":
+                return _cmd_perfil()
             if args.comando == "analisar":
                 return _cmd_analisar(args)
             if args.comando == "historico":
@@ -221,6 +251,10 @@ def _cmd_sync_ats(args) -> int:
 
 
 def _exigir_api_key() -> bool:
+    perfil = perfil_usuario.atual()
+    if perfil.onboarding_concluido and not perfil.consentimento_ia:
+        print("Erro: o perfil não autorizou o envio de dados ao Gemini. Rode 'triar configurar'.")
+        return False
     if not os.environ.get("GEMINI_API_KEY"):
         print("Erro: defina GEMINI_API_KEY no ambiente ou no arquivo .env (veja .env.example).")
         return False
@@ -253,9 +287,10 @@ def _cmd_buscar(args) -> int:
         return 1
 
     try:
-        print(f"Buscando até {args.limite} vaga(s) atuais na web para: {args.pedido}\n")
+        pedido = args.pedido or perfil_usuario.atual().pedido_padrao()
+        print(f"Buscando até {args.limite} vaga(s) atuais na web para: {pedido}\n")
         vagas = buscar_vagas(
-            client, cv_base, args.pedido, args.limite, args.modelo,
+            client, cv_base, pedido, args.limite, args.modelo,
             log=print, usar_cache=not args.sem_cache,
         )
     except Exception as e:
@@ -289,6 +324,67 @@ def _cmd_buscar(args) -> int:
         for indice, vaga in enumerate(vagas)
     ]
     return _cmd_analisar(args, textos, chaves, registros)
+
+
+def _lista_resposta(rotulo: str, padrao: list[str]) -> list[str]:
+    resposta = input(f"{rotulo} [{', '.join(padrao)}]: ").strip()
+    return [item.strip() for item in resposta.split(",") if item.strip()] or padrao
+
+
+def _sim_nao(rotulo: str, padrao: bool = True) -> bool:
+    dica = "S/n" if padrao else "s/N"
+    resposta = input(f"{rotulo} [{dica}]: ").strip().lower()
+    if not resposta:
+        return padrao
+    return resposta in {"s", "sim", "y", "yes"}
+
+
+def _cmd_configurar(args) -> int:
+    """Cria o perfil por importação ou por perguntas curtas e explícitas."""
+    try:
+        if args.arquivo:
+            perfil = perfil_usuario.PerfilUsuario.model_validate_json(
+                Path(args.arquivo).read_text(encoding="utf-8")
+            )
+        else:
+            atual = perfil_usuario.atual()
+            print("\nOnboarding — suas respostas ficam somente neste computador.\n")
+            nome = input(f"Nome [{atual.nome}]: ").strip() or atual.nome
+            pais = input(f"País de contratação [{atual.pais}]: ").strip() or atual.pais
+            cidades = _lista_resposta("Cidades aceitas (separadas por vírgula)", atual.cidades_aceitas)
+            areas = _lista_resposta("Áreas/cargos desejados", atual.areas)
+            senioridades = _lista_resposta("Senioridades aceitas", atual.senioridades)
+            tecnologias = _lista_resposta("Tecnologias principais", atual.tecnologias)
+            remoto = _sim_nao("Aceita trabalho remoto?", atual.aceita_remoto)
+            hibrido = _sim_nao("Aceita trabalho híbrido?", atual.aceita_hibrido)
+            presencial = _sim_nao("Aceita trabalho presencial?", atual.aceita_presencial)
+            consentimento = _sim_nao(
+                "Autoriza enviar CV sem blocos PRIVADO e textos de vagas ao Gemini?", False
+            )
+            perfil = atual.model_copy(update={
+                "nome": nome, "pais": pais, "cidades_aceitas": cidades,
+                "areas": areas, "senioridades": senioridades, "tecnologias": tecnologias,
+                "aceita_remoto": remoto, "aceita_hibrido": hibrido,
+                "aceita_presencial": presencial, "consentimento_ia": consentimento,
+                "onboarding_concluido": True,
+            })
+            perfil = perfil_usuario.PerfilUsuario.model_validate(perfil.model_dump())
+        perfil_usuario.salvar(perfil)
+    except (OSError, ValueError) as e:
+        print(f"Erro ao configurar perfil: {e}")
+        return 1
+    print(f"\nPerfil salvo em {perfil_usuario.ARQUIVO}.")
+    print("Pedido padrão: " + perfil.pedido_padrao())
+    if not perfil.consentimento_ia:
+        print("Aviso: consentimento de IA não concedido; buscar/analisar/cv serão bloqueados.")
+    return 0
+
+
+def _cmd_perfil() -> int:
+    perfil = perfil_usuario.atual()
+    print(perfil.model_dump_json(indent=2))
+    print("\nPedido padrão: " + perfil.pedido_padrao())
+    return 0
 
 
 def _impor_campos_autoritativos(analise: AnaliseVaga, texto_origem: str) -> AnaliseVaga:

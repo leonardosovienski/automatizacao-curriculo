@@ -12,7 +12,7 @@ de CV sob medida para cada vaga.
 > **Estado em 2026-08-08:** revisão concluída e incorporada à `main` no commit
 > `cc06320` pelos PRs [#36](https://github.com/leonardosovienski/automatizacao-curriculo/pull/36)
 > e [#37](https://github.com/leonardosovienski/automatizacao-curriculo/pull/37). A validação
-> pós-merge passou com 354 testes Python, 83,08% de cobertura, 42 testes E2E, build do
+> validação local passou com 342 testes Python, 79,42% de cobertura, 48 testes E2E, build do
 > frontend, auditoria de dependências, CodeQL e pipeline real. Não há bloqueio técnico
 > conhecido; `main` é a única branch ativa.
 
@@ -81,7 +81,39 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env   # gere a chave em https://aistudio.google.com/apikey
+triar configurar         # onboarding guiado do candidato
 ```
+
+O onboarding cria `perfil.json` localmente. Nome, país, cidades aceitas, modalidades,
+áreas, senioridades, tecnologias, pesos e consentimento de IA passam a ser a fonte única
+do prompt, do pedido padrão, dos hard filters e da pontuação. O arquivo é gitignorado porque
+contém preferências pessoais. Use `triar perfil` para revisar a configuração ou execute
+`triar configurar` novamente para alterá-la.
+
+Para provisionamento automatizado também é possível importar um perfil validado:
+
+```powershell
+triar configurar --arquivo perfil.exemplo.json
+```
+
+Chamadas ao Gemini ficam bloqueadas quando um onboarding concluído não contém consentimento.
+O consentimento não substitui os marcadores `PRIVADO`: eles continuam removendo dados
+sensíveis antes de qualquer chamada externa.
+
+### Onboarding pela interface web
+
+Ao abrir o frontend, o usuário cria uma conta e autentica-se antes de acessar qualquer
+dado. Sem um perfil concluído, um formulário obrigatório orienta a criação do perfil e do
+CV-base. Depois, o formulário pode ser reaberto pelo ícone de engrenagem.
+
+Usuários nunca fornecem chaves do Gemini, Jooble ou Adzuna. As credenciais pertencem ao
+operador do serviço, ficam exclusivamente no backend e não são expostas pela API.
+
+Depois do onboarding, o botão **Buscar vagas** inicia a coleta e a análise no backend,
+exibe o progresso e atualiza o painel ao concluir. Não é necessário usar o terminal.
+
+O editor de CV cria um esqueleto inicial e preserva a proteção por marcadores
+`<!-- PRIVADO --> ... <!-- /PRIVADO -->`. A gravação do perfil e do CV é atômica.
 
 Variáveis de ambiente (todas ficam só no `.env`, que é gitignorado):
 
@@ -92,6 +124,7 @@ Variáveis de ambiente (todas ficam só no `.env`, que é gitignorado):
 | `ADZUNA_APP_ID` + `ADZUNA_API_KEY` | não | fonte estruturada de vagas (as duas juntas) |
 | `TRIAGEM_HISTORICO` | não | caminho alternativo do `historico.json` |
 | `TRIAGEM_CV_BASE` | não | caminho alternativo do `perfil/cv_base.md` |
+| `TRIAGEM_PERFIL` | não | caminho alternativo do `perfil.json` |
 
 Como alternativa, instale o comando `triar` diretamente:
 
@@ -292,7 +325,7 @@ pip install -e ".[dev]"
 python -m ruff check .
 ```
 
-São **354 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
+São **342 testes** sem chamadas reais à API, com cobertura de branches mínima de 75% no CI
 (hoje em 83.08%). Cobrem parse do input, regra fixa do D2, score composto,
 ranking do relatório, dedup/status do histórico, export md/csv, os filtros determinísticos
 da busca (área pelo título, senioridade, validade, localização declarada, elegibilidade
@@ -318,7 +351,7 @@ npm run test:e2e
 ```
 
 42 testes Playwright em desktop e mobile, **gate obrigatório no CI**. A suíte é
-auto-contida: sobe API e Vite sozinha com um `historico.json` isolado, populado de um
+auto-contida: sobe API e Vite sozinha com um banco SQLite isolado, populado de um
 fixture estático — não toca no seu histórico real nem chama o Gemini. Detalhes em
 [frontend/PLAYWRIGHT-SETUP.md](frontend/PLAYWRIGHT-SETUP.md).
 
@@ -348,22 +381,47 @@ diagnóstico informa **qual credencial chegou e por qual nome**, que é o que se
 > resultados incomodar, torne o repositório privado. O artefato `resultado-busca` expira
 > em **3 dias** para reduzir a janela de exposição; os logs do run continuam públicos.
 
-## Interface web (opcional)
+## Interface web
 
-Além da CLI, o histórico pode ser navegado por uma interface web: `api/app.py` expõe o
-`historico.json` via FastAPI (leitura + atualização de status) e `frontend/` é um cliente
-React/Vite/Tailwind para essa API. Ver [frontend/README.md](frontend/README.md) para
-instruções. É opcional — a CLI continua sendo a única forma de rodar
-`buscar`/`analisar`/`cv`.
+A interface web é um cliente SaaS autenticado. Perfis, CVs e vagas são persistidos no banco
+com `usuario_id`; toda consulta privada aplica o usuário extraído do JWT.
 
-> **Atenção:** a API não tem autenticação e o `PATCH` altera estado. Rode-a somente em
-> `127.0.0.1`; não exponha a porta na rede, em túnel ou proxy público sem autenticação e
-> HTTPS adicionais.
+### Configuração SaaS
 
-**A API e a CLI compartilham o mesmo lock de arquivo** (`historico.caminho_lock()`), então
-usar as duas ao mesmo tempo não perde escrita. Um `historico.json` ilegível vira **503** com
-a mensagem de erro e a dica do `.bak`, não um 500 sem corpo. O `PATCH` devolve 409 quando o
-lock está ocupado por outro processo.
+Para testar localmente, execute os comandos a partir da raiz deste repositório (não de
+`C:\Users\seu-usuario`):
+
+```powershell
+python -m uvicorn api.app:app --host 127.0.0.1 --port 8000
+```
+
+Em outro terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Abra `http://127.0.0.1:5173`. O `.env` da raiz deve conter ao menos a
+`GEMINI_API_KEY`; Jooble e Adzuna são fontes adicionais opcionais.
+
+SQLite é aceito somente para desenvolvimento. Produção deve usar PostgreSQL e um segredo
+JWT longo e aleatório:
+
+```powershell
+$env:DATABASE_URL="postgresql+psycopg://usuario:senha@host/banco"
+$env:TRIAGEM_JWT_SECRET="gere-um-segredo-aleatorio-forte"
+python -m alembic upgrade head
+python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+```
+
+Senhas usam Argon2. HTTPS deve terminar no proxy ou na plataforma de hospedagem, e
+`TRIAGEM_CORS_ORIGINS` deve conter apenas o domínio real do frontend.
+
+A sessão usa cookie `HttpOnly` assinado, portanto o token não fica disponível ao
+JavaScript. A API também fornece exportação integral dos dados e exclusão de conta com
+reconfirmação da senha; a exclusão remove em cascata perfil, CV e vagas.
 
 ## Estrutura
 

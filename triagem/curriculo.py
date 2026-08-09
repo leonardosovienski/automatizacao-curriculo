@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -26,6 +27,30 @@ def aplicar_config_do_ambiente() -> None:
     """Re-resolve o CV depois que o CLI carrega variáveis do arquivo `.env`."""
     global CV_BASE
     CV_BASE = Path(os.environ.get("TRIAGEM_CV_BASE") or Path.cwd() / "perfil" / "cv_base.md")
+
+
+def salvar_cv_base(conteudo: str) -> None:
+    """Persiste o CV de forma atômica, sem deixar arquivo parcial."""
+    if not conteudo.strip():
+        raise ValueError("O CV base não pode ficar vazio.")
+    if len(conteudo.encode("utf-8")) > 500_000:
+        raise ValueError("O CV base excede o limite de 500 KB.")
+    CV_BASE.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporario = tempfile.mkstemp(
+        prefix=f".{CV_BASE.name}.", suffix=".tmp", dir=CV_BASE.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as arquivo:
+            arquivo.write(conteudo)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, CV_BASE)
+    except BaseException:
+        try:
+            os.unlink(temporario)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 # Blocos marcados assim nunca saem da máquina: são removidos antes de qualquer

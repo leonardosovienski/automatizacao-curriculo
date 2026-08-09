@@ -1,0 +1,23 @@
+{
+  "versao": 1,
+  "nome": "Seu nome",
+  "pais": "Brasil",
+  "cidades_aceitas": ["Curitiba", "Araucária"],
+  "aceita_remoto": true,
+  "aceita_hibrido": true,
+  "aceita_presencial": false,
+  "areas": ["Desenvolvimento Backend", "DevOps"],
+  "senioridades": ["Estágio", "Júnior"],
+  "tecnologias": ["Python", "C#", "Docker"],
+  "idiomas": ["Português", "Inglês"],
+  "pesos": {
+    "d1_crescimento": 0.3,
+    "d2_regime_localizacao": 0.25,
+    "d3_stack_fit": 0.2,
+    "d4_ingles": 0.15,
+    "d5_nivel_real": 0.1
+  },
+  "cv_base": "perfil/cv_base.md",
+  "consentimento_ia": true,
+  "onboarding_concluido": true
+}

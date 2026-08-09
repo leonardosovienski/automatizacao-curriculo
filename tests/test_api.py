@@ -1,253 +1,135 @@
-"""Testes da API REST (api/app.py) sobre o histórico."""
+"""Autenticação, persistência e isolamento multiusuário da API SaaS."""
 
-import json
-
-import filelock
-import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from api import app as api_app
-from triagem import historico
+from api.database import Base, VagaDB, sessao
 
 
-def _entrada(
-    *,
-    empresa="ACME",
-    titulo="Backend Engineer",
-    status="novo",
-    score=80.0,
-    regime="remoto",
-    descartada=False,
-    motivo_descarte=None,
-    notas=None,
-    alertas=None,
-):
-    return {
-        "analisado_em": "2026-08-07T10:00:00",
-        "status": status,
-        "score_final": None if descartada else score,
-        "pipeline_version": 2,
-        "texto": f"Vaga: {titulo}\nEmpresa: {empresa}",
-        "analise": {
-            "titulo_normalizado": titulo,
-            "empresa": empresa,
-            "regime": regime,
-            "localizacao": "Brasil",
-            "nivel_real": "pleno_disfarcado",
-            "stack_exigida": ["Python"],
-            "stack_desejavel": ["FastAPI"],
-            "idioma_trabalho": "pt",
-            "link": "https://example.com/vaga",
-            "origem": "teste",
-            "publicada_em": "",
-            "descartada": descartada,
-            "motivo_descarte": motivo_descarte,
-            "notas": notas,
-            "alertas": alertas or [],
-        },
-    }
-
-
-@pytest.fixture
-def cliente(tmp_path, monkeypatch):
-    caminho = tmp_path / "historico.json"
-    monkeypatch.setattr(historico, "ARQUIVO", caminho)
-    monkeypatch.setattr(api_app, "LOCK", filelock.FileLock(str(historico.caminho_lock())))
-    monkeypatch.setattr(api_app, "LOCK_TIMEOUT_S", 0.2)
-    return TestClient(api_app.app)
-
-
-def _escrever_historico(caminho, dados):
-    caminho.write_text(json.dumps(dados), encoding="utf-8")
-
-
-def test_health(cliente):
-    resp = cliente.get("/health")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
-
-
-def test_stats_sem_historico(cliente):
-    resp = cliente.get("/api/stats")
-    assert resp.status_code == 200
-    assert resp.json()["total"] == 0
-    assert resp.json()["por_status"]["novo"] == 0
-
-
-def test_stats_conta_por_status(cliente, tmp_path):
-    _escrever_historico(
-        historico.ARQUIVO,
-        {
-            "a1": _entrada(status="novo"),
-            "a2": _entrada(status="aplicado"),
-            "a3": _entrada(status="aplicado"),
+def _entrada(empresa="ACME", status="novo", score=80.0):
+    return VagaDB(
+        vaga_id=f"{empresa.lower()}123456", status=status, score_final=score,
+        analisado_em="2026-08-07T10:00:00", texto="vaga",
+        analise={
+            "titulo_normalizado": "Backend Engineer", "empresa": empresa,
+            "regime": "remoto", "localizacao": "Brasil", "nivel_real": "jr",
+            "idioma_trabalho": "pt", "stack_exigida": ["Python"],
+            "stack_desejavel": [], "alertas": [], "descartada": False,
         },
     )
-    resp = cliente.get("/api/stats")
-    body = resp.json()
-    assert body["total"] == 3
-    assert body["por_status"]["novo"] == 1
-    assert body["por_status"]["aplicado"] == 2
 
 
-def test_listar_vagas_vazio(cliente):
-    resp = cliente.get("/api/vagas")
-    assert resp.status_code == 200
-    assert resp.json() == []
+def _cadastro(cliente, email):
+    resposta = cliente.post("/api/auth/cadastro", json={"email": email, "senha": "senha-forte-123"})
+    assert resposta.status_code == 201
+    dados = resposta.json()
+    dados["_token"] = resposta.cookies.get("triagem_session")
+    assert dados["_token"]
+    assert "access_token" not in dados
+    return dados
 
 
-def test_listar_vagas_ordena_por_score_desc(cliente):
-    _escrever_historico(
-        historico.ARQUIVO,
-        {
-            "baixo": _entrada(empresa="Baixo", score=40.0),
-            "alto": _entrada(empresa="Alto", score=95.0),
-            "descartado": _entrada(
-                empresa="Descartado", descartada=True, motivo_descarte="fora do raio"
-            ),
-        },
+def _headers(sessao_auth):
+    return {"Authorization": f"Bearer {sessao_auth['_token']}"}
+
+
+def test_health_e_rotas_privadas_exigem_login():
+    cliente = TestClient(api_app.app)
+    assert cliente.get("/health").json() == {"status": "ok"}
+    assert cliente.get("/api/vagas").status_code == 401
+
+
+def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    resp = cliente.get("/api/vagas")
-    assert resp.status_code == 200
-    empresas = [v["empresa"] for v in resp.json()]
-    # descartada (score_final None) sempre por último
-    assert empresas == ["Alto", "Baixo", "Descartado"]
+    TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+    Base.metadata.create_all(engine)
 
+    def sessao_teste():
+        with TestSession() as db:
+            yield db
 
-def test_listar_vagas_filtra_por_status(cliente):
-    _escrever_historico(
-        historico.ARQUIVO,
-        {
-            "a1": _entrada(status="novo"),
-            "a2": _entrada(status="aplicado"),
-        },
+    api_app.app.dependency_overrides[sessao] = sessao_teste
+    cliente = TestClient(api_app.app)
+    agendadas = []
+    monkeypatch.setenv("GEMINI_API_KEY", "chave-teste")
+    monkeypatch.setattr(api_app, "agendar", agendadas.append)
+    ana = _cadastro(cliente, "ana@example.com")
+    bia = _cadastro(cliente, "bia@example.com")
+
+    assert cliente.post(
+        "/api/auth/cadastro", json={"email": "ana@example.com", "senha": "outra-senha-123"}
+    ).status_code == 409
+    assert cliente.post(
+        "/api/auth/login", json={"email": "ana@example.com", "senha": "errada"}
+    ).status_code == 401
+    login = cliente.post(
+        "/api/auth/login", json={"email": "ana@example.com", "senha": "senha-forte-123"}
     )
-    resp = cliente.get("/api/vagas", params={"status": "aplicado"})
-    assert resp.status_code == 200
-    vagas = resp.json()
-    assert len(vagas) == 1
-    assert vagas[0]["status"] == "aplicado"
+    assert login.status_code == 200
+    assert cliente.get("/api/auth/me", headers=_headers(ana)).json()["email"] == "ana@example.com"
 
+    perfil_ana = cliente.get("/api/perfil", headers=_headers(ana)).json()
+    perfil_ana.update({
+        "nome": "Ana", "areas": ["QA"], "cidades_aceitas": ["Recife"],
+        "senioridades": ["Júnior"], "consentimento_ia": True,
+        "onboarding_concluido": True,
+    })
+    assert cliente.put("/api/perfil", json=perfil_ana, headers=_headers(ana)).status_code == 200
+    assert cliente.get("/api/perfil", headers=_headers(bia)).json()["nome"] == "bia"
 
-def test_listar_vagas_status_invalido_400(cliente):
-    resp = cliente.get("/api/vagas", params={"status": "nao_existe"})
-    assert resp.status_code == 400
+    assert cliente.put(
+        "/api/cv", json={"conteudo": "# CV exclusivo da Ana"}, headers=_headers(ana)
+    ).status_code == 200
+    assert cliente.get("/api/cv", headers=_headers(bia)).json()["conteudo"] == ""
+    assert cliente.put("/api/cv", json={"conteudo": " "}, headers=_headers(ana)).status_code == 400
 
-
-def test_vaga_expoe_notas_e_stack(cliente):
-    notas = {
-        "d1_crescimento": {"nota": 8, "justificativa": "boa"},
-    }
-    _escrever_historico(
-        historico.ARQUIVO,
-        {"a1": _entrada(notas=notas, alertas=["cuidado"])},
+    iniciada = cliente.post(
+        "/api/buscas", json={"pedido": "Python remoto", "limite": 5}, headers=_headers(ana)
     )
-    resp = cliente.get("/api/vagas")
-    vaga = resp.json()[0]
-    assert vaga["notas"]["d1_crescimento"]["nota"] == 8
-    assert vaga["stack_exigida"] == ["Python"]
-    assert vaga["alertas"] == ["cuidado"]
+    assert iniciada.status_code == 202
+    busca_id = iniciada.json()["id"]
+    assert agendadas == [busca_id]
+    assert iniciada.json()["estado"] == "pendente"
+    assert cliente.post("/api/buscas", json={}, headers=_headers(ana)).status_code == 409
+    assert cliente.get(f"/api/buscas/{busca_id}", headers=_headers(bia)).status_code == 404
+    assert cliente.get("/api/buscas/atual", headers=_headers(ana)).json()["id"] == busca_id
 
+    with TestSession() as db:
+        vaga_ana = _entrada("ACME")
+        vaga_ana.usuario_id = ana["usuario"]["id"]
+        vaga_bia = _entrada("BETA")
+        vaga_bia.usuario_id = bia["usuario"]["id"]
+        db.add_all([vaga_ana, vaga_bia])
+        db.commit()
 
-def test_obter_vaga_por_id(cliente):
-    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(empresa="Única")})
-    resp = cliente.get("/api/vagas/a1")
-    assert resp.status_code == 200
-    assert resp.json()["empresa"] == "Única"
+    vagas_ana = cliente.get("/api/vagas", headers=_headers(ana)).json()
+    vagas_bia = cliente.get("/api/vagas", headers=_headers(bia)).json()
+    assert [vaga["empresa"] for vaga in vagas_ana] == ["ACME"]
+    assert [vaga["empresa"] for vaga in vagas_bia] == ["BETA"]
+    assert cliente.get("/api/vagas/beta", headers=_headers(ana)).status_code == 404
 
+    resposta = cliente.patch(
+        "/api/vagas/acme/status", json={"status": "aplicado"}, headers=_headers(ana)
+    )
+    assert resposta.status_code == 200
+    assert resposta.json()["status"] == "aplicado"
+    assert cliente.get("/api/stats", headers=_headers(ana)).json()["por_status"]["aplicado"] == 1
+    assert cliente.get("/api/stats", headers=_headers(bia)).json()["por_status"]["aplicado"] == 0
 
-def test_obter_vaga_inexistente_404(cliente):
-    resp = cliente.get("/api/vagas/nao-existe")
-    assert resp.status_code == 404
-
-
-def test_atualizar_status_persiste_no_arquivo(cliente):
-    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
-    resp = cliente.patch("/api/vagas/a1/status", json={"status": "aplicado"})
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "aplicado"
-
-    persistido = historico.carregar()
-    assert persistido["a1"]["status"] == "aplicado"
-
-
-def test_atualizar_status_aceita_prefixo_de_id(cliente):
-    _escrever_historico(historico.ARQUIVO, {"abcdef1234": _entrada(status="novo")})
-    resp = cliente.patch("/api/vagas/abcdef/status", json={"status": "entrevista"})
-    assert resp.status_code == 200
-    assert resp.json()["id"] == "abcdef1234"
-
-
-def test_atualizar_status_invalido_400(cliente):
-    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
-    resp = cliente.patch("/api/vagas/a1/status", json={"status": "nao_existe"})
-    assert resp.status_code == 400
-
-
-def test_atualizar_status_id_inexistente_404(cliente):
-    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
-    resp = cliente.patch("/api/vagas/zzz/status", json={"status": "aplicado"})
-    assert resp.status_code == 404
-
-
-# ------------------------------------------------- histórico ilegível
-
-@pytest.mark.parametrize("rota", ["/api/stats", "/api/vagas", "/api/vagas/a1"])
-def test_historico_corrompido_vira_503_e_nao_500(cliente, rota):
-    """Arquivo ilegível é condição de servidor conhecida, não bug: 503 + dica.
-
-    Antes o ValueError de `historico.carregar()` subia cru e virava 500, sem
-    corpo útil — o frontend não tinha como distinguir "arquivo quebrado" de
-    "a API caiu", e a dica do .bak (a única acionável) se perdia.
-    """
-    historico.ARQUIVO.write_text("{ isto nao e json valido", encoding="utf-8")
-
-    resp = cliente.get(rota)
-    assert resp.status_code == 503
-    assert "backup" in resp.json()["detail"].lower()
-
-
-def test_historico_nao_objeto_vira_503(cliente):
-    historico.ARQUIVO.write_text("[]", encoding="utf-8")
-    resp = cliente.get("/api/vagas")
-    assert resp.status_code == 503
-
-
-def test_patch_com_historico_corrompido_nao_vira_400(cliente):
-    """Distingue "arquivo quebrado" (503) de "status inválido" (400)."""
-    historico.ARQUIVO.write_text("{ quebrado", encoding="utf-8")
-    resp = cliente.patch("/api/vagas/a1/status", json={"status": "aplicado"})
-    assert resp.status_code == 503
-
-
-# ------------------------------------------------------ lock compartilhado
-
-def test_api_usa_o_mesmo_lock_da_cli(tmp_path, monkeypatch):
-    """Regressão do lost update: os dois lados precisam do MESMO arquivo.
-
-    `api_app.LOCK` é montado na importação; o que importa é que ele venha de
-    `historico.caminho_lock()` — a mesma função que a CLI usa — e não de uma
-    concatenação própria que possa divergir de novo.
-    """
-    monkeypatch.setattr(historico, "ARQUIVO", tmp_path / "historico.json")
-    assert historico.caminho_lock().name == "historico.json.lock"
-
-    import inspect
-
-    fonte = inspect.getsource(api_app)
-    assert "FileLock(str(historico.caminho_lock()))" in fonte
-
-
-def test_patch_devolve_409_quando_o_lock_esta_ocupado(cliente, tmp_path):
-    """Concorrência com a CLI: espera-se 409 acionável, não corrupção nem 500."""
-    _escrever_historico(historico.ARQUIVO, {"a1": _entrada(status="novo")})
-    # instância distinta sobre o MESMO arquivo: contenção real de SO, como
-    # aconteceria com um `triar analisar` rodando em paralelo
-    outro_processo = filelock.FileLock(str(historico.caminho_lock()), thread_local=False)
-
-    with outro_processo:
-        resp = cliente.patch("/api/vagas/a1/status", json={"status": "aplicado"})
-
-    assert resp.status_code == 409
-    # o registro não pode ter sido tocado
-    assert historico.carregar()["a1"]["status"] == "novo"
+    exportado = cliente.get("/api/auth/exportar", headers=_headers(ana))
+    assert exportado.status_code == 200
+    assert exportado.json()["usuario"]["email"] == "ana@example.com"
+    assert exportado.json()["vagas"][0]["analise"]["empresa"] == "ACME"
+    assert cliente.request(
+        "DELETE", "/api/auth/me", json={"senha": "incorreta"}, headers=_headers(bia)
+    ).status_code == 403
+    assert cliente.request(
+        "DELETE", "/api/auth/me", json={"senha": "senha-forte-123"}, headers=_headers(bia)
+    ).status_code == 204
+    assert cliente.get("/api/auth/me", headers=_headers(bia)).status_code == 401
+    api_app.app.dependency_overrides.clear()

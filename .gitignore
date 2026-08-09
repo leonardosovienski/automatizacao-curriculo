@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .pytest_cache/
 .coverage
+.coverage.*
+.coverage_new*
+.coverage_*
 htmlcov/
 historico.json
 historico.json.bak
@@ -12,6 +15,9 @@ historico.json.lock
 # Historico isolado usado pelo E2E (Playwright) — ver api/seed_e2e.py
 .e2e-historico.json
 .e2e-historico.json.lock
+.e2e-perfil.json
+.e2e.db
+triagem.db
 .cache_busca.json
 alvos_ats.json
 # Payloads brutos para replay determinístico: dados de execução, não código.
@@ -39,8 +45,11 @@ busca_jooble.md
 /dist/
 .smoke/
 .simulacao/
+.e2e*.db
 # CV real contém telefone/e-mail pessoais; versione só o template .exemplo.md
 perfil/cv_base.md
+# Preferências pessoais criadas pelo onboarding; versione apenas perfil.exemplo.json.
+perfil.json
 # Worktrees e estado de sessão do Claude Code: pertencem a outro repositório.
 .claude/
 # Notas locais desta máquina: nunca versionadas.
