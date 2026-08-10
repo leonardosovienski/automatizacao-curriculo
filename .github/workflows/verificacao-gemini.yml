@@ -150,7 +150,7 @@ jobs:
       # re-paga) vagas já vistas. Restaurar o histórico faz a dedup funcionar
       # entre execuções, que é o comportamento pretendido do projeto.
       - name: Restaurar histórico de execuções anteriores
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: historico.json
           key: historico-buscar-${{ github.run_id }}
@@ -196,7 +196,7 @@ jobs:
 
       - name: Guardar o histórico para a próxima execução
         if: ${{ !cancelled() }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: historico.json
           key: historico-buscar-${{ github.run_id }}
