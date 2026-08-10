@@ -1,0 +1,43 @@
+name: Deploy Frontend to Vercel
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Deploy to Vercel
+        if: env.VERCEL_TOKEN != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: |
+          echo "Deploying to Vercel..."
+          # The Vercel CLI will pick up VERCEL_TOKEN from env
+          npm install -g vercel@28
+          cd frontend
+          vercel --prod --confirm --token "$VERCEL_TOKEN" --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID"
+      - name: Deploy instructions
+        if: env.VERCEL_TOKEN == ''
+        run: |
+          echo "No VERCEL_TOKEN secret found. To enable automatic deploys, add repository secrets: VERCEL_TOKEN, VERCEL_PROJECT_ID, VERCEL_ORG_ID."
