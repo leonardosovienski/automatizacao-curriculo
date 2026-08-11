@@ -51,6 +51,7 @@ export default defineConfig({
             TRIAGEM_DATABASE: process.env.TRIAGEM_DATABASE ?? '.e2e.db',
             E2E_API_PORT: process.env.E2E_API_PORT ?? '8000',
             TRIAGEM_CORS_ORIGINS: e2eBaseUrl,
+            TRIAGEM_JWT_SECRET: process.env.TRIAGEM_JWT_SECRET ?? 'segredo-e2e-nao-usar-em-producao',
           },
           url: `${e2eApiUrl}/health`,
           reuseExistingServer: !process.env.CI,
