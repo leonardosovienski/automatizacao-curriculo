@@ -24,6 +24,7 @@ from .auth import (  # noqa: E402
     usuario_atual,
     verificar_senha,
 )
+from .billing import router as billing_router  # noqa: E402
 from .database import (  # noqa: E402
     BuscaDB,
     PerfilDB,
@@ -57,6 +58,8 @@ app.add_middleware(
     allow_methods=["GET", "PATCH", "PUT", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+app.include_router(billing_router)
 
 
 class CadastroPayload(BaseModel):

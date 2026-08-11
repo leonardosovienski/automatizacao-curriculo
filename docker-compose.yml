@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: triagem
+      POSTGRES_PASSWORD: triagem
+      POSTGRES_DB: triagem
+    ports:
+      - "5432:5432"
+    volumes:
+      - triagem-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U triagem"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://triagem:triagem@db/triagem
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  triagem-db:
