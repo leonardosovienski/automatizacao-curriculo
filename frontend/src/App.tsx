@@ -1,6 +1,7 @@
-import { CheckCircle2, HelpCircle, Search, Settings } from "lucide-react";
+import { CheckCircle2, CreditCard, HelpCircle, Search, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { atualizarStatus, encerrarSessao, iniciarBusca, listarVagas, obterBusca, obterBuscaAtual, obterOnboarding, obterStats, obterUsuario } from "./api";
+import { AssinaturaModal } from "./components/AssinaturaModal";
 import { AuthScreen } from "./components/AuthScreen";
 import { CardSkeleton } from "./components/CardSkeleton";
 import { Modal } from "./components/Modal";
@@ -56,6 +57,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [atualizandoId, setAtualizandoId] = useState<string | null>(null);
   const [ajudaAberta, setAjudaAberta] = useState(false);
   const [configAberta, setConfigAberta] = useState(false);
+  const [assinaturaAberta, setAssinaturaAberta] = useState(false);
   const [configObrigatoria, setConfigObrigatoria] = useState(false);
   const [pedidoBusca, setPedidoBusca] = useState("");
   const [buscaAtual, setBuscaAtual] = useState<BuscaVagas | null>(null);
@@ -191,6 +193,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             <Settings size={20} />
           </button>
           <button
+            onClick={() => setAssinaturaAberta(true)}
+            aria-label="Assinatura"
+            className="p-1.5 text-muted transition-colors hover:text-text"
+          >
+            <CreditCard size={20} />
+          </button>
+          <button
             onClick={() => setAjudaAberta(true)}
             aria-label="Como buscar vagas"
             className="p-1.5 text-muted transition-colors hover:text-text"
@@ -320,6 +329,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         obrigatorio={configObrigatoria}
         onClose={() => setConfigAberta(false)}
         onComplete={() => setConfigObrigatoria(false)}
+      />
+      <AssinaturaModal
+        open={assinaturaAberta}
+        onClose={() => setAssinaturaAberta(false)}
       />
     </div>
   );

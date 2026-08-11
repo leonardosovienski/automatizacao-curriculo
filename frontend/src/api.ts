@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { BuscaVagas, EstadoOnboarding, PerfilUsuario, Sessao, Stats, Status, UsuarioSessao, VagaResumo } from "./types";
+import type { BuscaVagas, EstadoOnboarding, PerfilUsuario, Sessao, StatusAssinatura, Stats, Status, UsuarioSessao, VagaResumo } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 
@@ -72,4 +72,17 @@ export async function obterBuscaAtual(): Promise<BuscaVagas | null> {
 }
 export async function obterBusca(id: string): Promise<BuscaVagas> {
   const { data } = await client.get<BuscaVagas>(`/api/buscas/${id}`); return data;
+}
+
+export async function obterStatusAssinatura(): Promise<StatusAssinatura> {
+  const { data } = await client.get<StatusAssinatura>("/billing/status");
+  return data;
+}
+export async function iniciarCheckoutAssinatura(): Promise<string> {
+  const { data } = await client.post<{ url: string }>("/billing/checkout");
+  return data.url;
+}
+export async function abrirPortalAssinatura(): Promise<string> {
+  const { data } = await client.post<{ url: string }>("/billing/portal");
+  return data.url;
 }
