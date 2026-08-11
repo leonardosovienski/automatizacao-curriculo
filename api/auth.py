@@ -23,9 +23,9 @@ def _segredo() -> str:
     segredo = os.environ.get("TRIAGEM_JWT_SECRET")
     if segredo:
         return segredo
-    if os.environ.get("DATABASE_URL"):
-        raise RuntimeError("TRIAGEM_JWT_SECRET é obrigatória fora do desenvolvimento local.")
-    return "desenvolvimento-local-troque-antes-de-publicar"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "segredo-de-teste-nao-usar-em-producao"
+    raise RuntimeError("TRIAGEM_JWT_SECRET é obrigatória.")
 
 
 def hash_senha(senha: str) -> str:

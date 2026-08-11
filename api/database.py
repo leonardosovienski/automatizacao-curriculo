@@ -97,6 +97,22 @@ class BuscaDB(Base):
     concluida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AssinaturaDB(Base):
+    __tablename__ = "assinaturas"
+
+    usuario_id: Mapped[str] = mapped_column(ForeignKey("usuarios.id", ondelete="CASCADE"), primary_key=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="inativa")
+    preco_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    periodo_atual_fim: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    atualizado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    usuario: Mapped[Usuario] = relationship()
+
+
 def criar_tabelas() -> None:
     Base.metadata.create_all(engine)
 
