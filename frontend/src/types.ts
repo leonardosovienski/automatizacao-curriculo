@@ -101,6 +101,12 @@ export const REGIME_LABEL: Record<string, string> = {
   indefinido: "Regime indefinido",
 };
 
+export interface StatusAssinatura {
+  status: string;
+  ativa: boolean;
+  periodo_atual_fim: string | null;
+}
+
 export const NIVEL_LABEL: Record<string, string> = {
   estagio: "Estágio",
   jr: "Júnior",
