@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api import app as api_app
-from api.database import Base, VagaDB, sessao
+from api.database import AssinaturaDB, Base, PerfilDB, VagaDB, sessao
 
 
 def _entrada(empresa="ACME", status="novo", score=80.0):
@@ -60,6 +60,22 @@ def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
     monkeypatch.setattr(api_app, "agendar", agendadas.append)
     ana = _cadastro(cliente, "ana@example.com")
     bia = _cadastro(cliente, "bia@example.com")
+    with TestSession() as db:
+        db.add(AssinaturaDB(
+            usuario_id=ana["usuario"]["id"],
+            stripe_customer_id="cus_ana",
+            status="active",
+        ))
+        perfil_bia = db.get(PerfilDB, bia["usuario"]["id"])
+        perfil_bia.dados.update({
+            "consentimento_ia": True,
+            "onboarding_concluido": True,
+        })
+        db.commit()
+
+    assert cliente.post(
+        "/api/buscas", json={"pedido": "Python remoto", "limite": 5}, headers=_headers(bia)
+    ).status_code == 402
 
     assert cliente.post(
         "/api/auth/cadastro", json={"email": "ana@example.com", "senha": "outra-senha-123"}
@@ -86,6 +102,9 @@ def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
         "/api/cv", json={"conteudo": "# CV exclusivo da Ana"}, headers=_headers(ana)
     ).status_code == 200
     assert cliente.get("/api/cv", headers=_headers(bia)).json()["conteudo"] == ""
+    assert cliente.put(
+        "/api/cv", json={"conteudo": "# CV da Bia"}, headers=_headers(bia)
+    ).status_code == 200
     assert cliente.put("/api/cv", json={"conteudo": " "}, headers=_headers(ana)).status_code == 400
 
     iniciada = cliente.post(

@@ -24,11 +24,12 @@ from .auth import (  # noqa: E402
     usuario_atual,
     verificar_senha,
 )
-from .billing import router as billing_router  # noqa: E402
+from .billing import _STATUS_ATIVOS, router as billing_router  # noqa: E402
 from .database import (  # noqa: E402
     BuscaDB,
     PerfilDB,
     Usuario,
+    AssinaturaDB,
     VagaDB,
     criar_tabelas,
     sessao,
@@ -315,6 +316,9 @@ def iniciar_busca(
     credenciais.carregar_no_ambiente()
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(503, "A integração de análise ainda não foi configurada pelo operador.")
+    assinatura = db.get(AssinaturaDB, usuario.id)
+    if not assinatura or assinatura.status not in _STATUS_ATIVOS:
+        raise HTTPException(402, "Uma assinatura ativa é necessária para buscar vagas.")
     perfil_db = _perfil_do_usuario(db, usuario)
     perfil = perfil_usuario.PerfilUsuario.model_validate(perfil_db.dados)
     if (

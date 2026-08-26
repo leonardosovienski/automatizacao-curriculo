@@ -15,7 +15,7 @@ def main() -> None:
         caminho.unlink()
 
     from api.auth import hash_senha
-    from api.database import PerfilDB, SessionLocal, Usuario, VagaDB, criar_tabelas
+    from api.database import AssinaturaDB, PerfilDB, SessionLocal, Usuario, VagaDB, criar_tabelas
     from triagem.perfil_usuario import PerfilUsuario
 
     criar_tabelas()
@@ -29,6 +29,11 @@ def main() -> None:
             senioridades=["Júnior"], onboarding_concluido=True,
         )
         db.add(PerfilDB(usuario_id=usuario.id, dados=perfil.model_dump(), cv_base="# CV E2E"))
+        db.add(AssinaturaDB(
+            usuario_id=usuario.id,
+            stripe_customer_id="cus_e2e",
+            status="active",
+        ))
         for vaga_id, entrada in fixture.items():
             db.add(VagaDB(
                 usuario_id=usuario.id, vaga_id=vaga_id, status=entrada["status"],
