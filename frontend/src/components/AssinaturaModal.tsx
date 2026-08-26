@@ -20,14 +20,13 @@ interface Props {
 
 export function AssinaturaModal({ open, onClose }: Props) {
   const [status, setStatus] = useState<StatusAssinatura | null>(null);
-  const [carregando, setCarregando] = useState(false);
+  const [carregando, setCarregando] = useState(true);
   const [processando, setProcessando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [indisponivel, setIndisponivel] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setCarregando(true);
     setErro(null);
     setIndisponivel(false);
     obterStatusAssinatura()

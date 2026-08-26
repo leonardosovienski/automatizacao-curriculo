@@ -111,7 +111,6 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   useEffect(() => {
     let cancelado = false;
-    setCarregando(true);
     setErro(null);
     listarVagas(filtro === "todas" ? undefined : filtro)
       .then((data) => {
