@@ -1444,27 +1444,28 @@ def _selecionar_candidatas(
         pontos = _pontuacao_preliminar(vaga)
         pontuadas.append((pontos, vaga))
 
+    unicas: list[tuple[int, VagaEncontrada]] = []
+    urls_vistas = set()
+    for pontos, vaga in pontuadas:
+        url = _url_canonica(vaga.link)
+        if url in urls_vistas:
+            cortes["duplicada"] += 1
+            continue
+        urls_vistas.add(url)
+        unicas.append((pontos, vaga))
+
     def _ordem(par: tuple[int, VagaEncontrada]):
         pontos, vaga = par
         # `_dias_desde` era chamada duas vezes por vaga só para testar contra None.
         idade = _dias_desde(vaga.publicada_em)
         return (pontos, -(idade if idade is not None else 999), len(vaga.descricao))
 
-    pontuadas.sort(key=_ordem, reverse=True)
-    candidatas = [vaga for _, vaga in pontuadas]
-    unicas = []
-    urls_vistas = set()
-    for vaga in candidatas:
-        url = _url_canonica(vaga.link)
-        if url in urls_vistas:
-            cortes["duplicada"] += 1
-            continue
-        urls_vistas.add(url)
-        unicas.append(vaga)
+    unicas.sort(key=_ordem, reverse=True)
+    candidatas = [vaga for _, vaga in unicas]
 
     descartes = ", ".join(f"{motivo}: {n}" for motivo, n in cortes.items() if n)
     log(f"  pré-filtro: {len(unicas)} candidata(s) de {len(vagas)}" + (f" ({descartes})" if descartes else ""))
-    return unicas[:limite]
+    return candidatas[:limite]
 
 
 # ---------------------------------------------------------------- fontes estruturadas

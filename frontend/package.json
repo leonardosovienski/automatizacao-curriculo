@@ -33,5 +33,8 @@
     "oxlint": "^1.79.0",
     "typescript": "~7.0.2",
     "vite": "^8.2.2"
+  },
+  "overrides": {
+    "nanoid": "^3.3.18"
   }
 }
