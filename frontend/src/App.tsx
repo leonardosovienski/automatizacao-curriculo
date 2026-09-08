@@ -1,5 +1,5 @@
 import { CheckCircle2, CreditCard, HelpCircle, Search, Settings, UserRound } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { atualizarStatus, encerrarSessao, iniciarBusca, listarVagas, mensagemErro, obterBusca, obterBuscaAtual, obterConfigPublica, obterOnboarding, obterStats, obterUsuario, statusErro, type ConfigPublica } from "./api";
 import { AssinaturaModal } from "./components/AssinaturaModal";
 import { AuthScreen } from "./components/AuthScreen";
@@ -69,6 +69,7 @@ function Dashboard({ onLogout, usuario, config }: { onLogout: (aviso?: string) =
   const [configObrigatoria, setConfigObrigatoria] = useState(false);
   const [pedidoBusca, setPedidoBusca] = useState("");
   const [buscaAtual, setBuscaAtual] = useState<BuscaVagas | null>(null);
+  const buscaVersao = useRef(0);
   const [iniciandoBusca, setIniciandoBusca] = useState(false);
   const [recarregar, setRecarregar] = useState(0);
   const [perfilPronto, setPerfilPronto] = useState(false);
@@ -98,18 +99,30 @@ function Dashboard({ onLogout, usuario, config }: { onLogout: (aviso?: string) =
   }, [recarregar, retornoCheckout]);
 
   useEffect(() => {
-    obterBuscaAtual().then(setBuscaAtual).catch(() => undefined);
+    let cancelado = false;
+    const versao = buscaVersao.current;
+    obterBuscaAtual().then((atual) => {
+      // The initial snapshot may arrive after a new search was accepted.
+      if (!cancelado && buscaVersao.current === versao) setBuscaAtual(atual);
+    }).catch(() => undefined);
+    return () => { cancelado = true; };
   }, []);
 
   useEffect(() => {
     if (!buscaAtual || !["pendente", "processando"].includes(buscaAtual.estado)) return;
+    let cancelado = false;
+    const versao = buscaVersao.current;
     const timer = window.setTimeout(() => {
       obterBusca(buscaAtual.id).then((atualizada) => {
+        if (cancelado || buscaVersao.current !== versao) return;
         setBuscaAtual(atualizada);
         if (atualizada.estado === "concluida") setRecarregar((n) => n + 1);
-      }).catch(() => { setErro("Não foi possível atualizar o progresso. A busca continua; tentando reconectar…"); setPollTentativa((n) => n + 1); });
+      }).catch(() => {
+        if (cancelado || buscaVersao.current !== versao) return;
+        setErro("Não foi possível atualizar o progresso. A busca continua; tentando reconectar…"); setPollTentativa((n) => n + 1);
+      });
     }, 2000);
-    return () => window.clearTimeout(timer);
+    return () => { cancelado = true; window.clearTimeout(timer); };
   }, [buscaAtual, pollTentativa]);
 
   useEffect(() => {
@@ -156,7 +169,11 @@ function Dashboard({ onLogout, usuario, config }: { onLogout: (aviso?: string) =
 
   async function handleIniciarBusca() {
     setIniciandoBusca(true); setErro(null);
-    try { setBuscaAtual(await iniciarBusca(pedidoBusca, limiteBusca)); }
+    try {
+      const iniciada = await iniciarBusca(pedidoBusca, limiteBusca);
+      buscaVersao.current += 1;
+      setBuscaAtual(iniciada);
+    }
     catch (e: unknown) {
       if (statusErro(e) === 402) { setRetornoCheckout(null); setAssinaturaAberta(true); }
       if (statusErro(e) === 409 && !perfilPronto) { setConfigObrigatoria(true); setConfigAberta(true); }
@@ -167,12 +184,10 @@ function Dashboard({ onLogout, usuario, config }: { onLogout: (aviso?: string) =
   async function handleStatusChange(id: string, status: Status) {
     setAtualizandoId(id);
     try {
-      const atualizada = await atualizarStatus(id, status);
-      setVagas((prev) =>
-        filtro === "todas" || filtro === status
-          ? prev.map((v) => (v.id === id ? atualizada : v))
-          : prev.filter((v) => v.id !== id),
-      );
+      await atualizarStatus(id, status);
+      // The user may have changed filters while the PATCH was in flight.
+      // Reload through the current filter's guarded listing effect.
+      setRecarregar((n) => n + 1);
     } catch {
       setErro("Falha ao atualizar o status. Tente novamente.");
     } finally {

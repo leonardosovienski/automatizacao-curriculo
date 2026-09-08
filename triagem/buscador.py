@@ -31,7 +31,7 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
-from . import alvos_ats, ats, cache, perfil_usuario, replay
+from . import alvos_ats, ats, cache, perfil_usuario, rede_segura, replay
 from .analisador import (
     MODELOS,
     TIMEOUT_BUSCA_MS,
@@ -779,7 +779,7 @@ def _resolver_router(url: str) -> str:
             return atual
         _esperar_vez(urlsplit(atual).netloc.lower())
         destino = ""
-        for metodo in (httpx.head, httpx.get):
+        for metodo in (rede_segura.head, rede_segura.get):
             try:
                 resposta = metodo(
                     atual, follow_redirects=False, timeout=10, headers=CABECALHOS_NAVEGADOR
@@ -1056,7 +1056,7 @@ def _esperar_vez(host: str) -> None:
 def _robots(base: str) -> Optional[RobotFileParser]:
     """robots.txt do host, ou None quando não há (o que libera o acesso)."""
     try:
-        resposta = httpx.get(
+        resposta = rede_segura.get(
             f"{base}/robots.txt", timeout=5, headers=CABECALHOS_NAVEGADOR, follow_redirects=False
         )
     except Exception:  # noqa: BLE001 — robots indisponível não bloqueia a busca
@@ -1086,21 +1086,20 @@ def _host_e_seguro(host: str) -> bool:
     """Aceita apenas hosts que resolvem exclusivamente para IPs globais.
 
     Links de agregadores são dados não confiáveis. Bloquear loopback, redes privadas
-    e link-local evita que a validação de uma vaga alcance serviços locais ou
-    metadados de cloud. Todos os A/AAAA precisam ser globais para não escolher
-    arbitrariamente entre respostas DNS seguras e inseguras.
+    e link-local. Este cache é só um filtro preliminar: rede_segura revalida os
+    endereços e fixa o IP na conexão, impedindo rebinding depois desta consulta.
     """
     nome = (host or "").strip().strip("[]").lower()
     if not nome or nome == "localhost":
         return False
     try:
-        return ipaddress.ip_address(nome).is_global
+        return rede_segura.ip_publico(str(ipaddress.ip_address(nome)))
     except ValueError:
         pass
     try:
         respostas = socket.getaddrinfo(nome, None, type=socket.SOCK_STREAM)
         enderecos = {resposta[4][0] for resposta in respostas}
-        return bool(enderecos) and all(ipaddress.ip_address(ip).is_global for ip in enderecos)
+        return bool(enderecos) and all(rede_segura.ip_publico(ip) for ip in enderecos)
     except (OSError, ValueError):
         return False
 
@@ -1125,7 +1124,7 @@ def _obter(link: str):
         if not _permitido_por_robots(destino):
             raise PermissaoRobots(destino)
         _esperar_vez(urlsplit(destino).netloc.lower())
-        resposta = httpx.get(
+        resposta = rede_segura.get(
             destino, follow_redirects=False, timeout=15, headers=CABECALHOS_NAVEGADOR
         )
         if resposta.status_code not in (301, 302, 303, 307, 308):

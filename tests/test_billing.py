@@ -34,6 +34,14 @@ def banco(tmp_path, monkeypatch):
     monkeypatch.setenv("TRIAGEM_MONTHLY_SEARCH_LIMIT", "30")
     monkeypatch.setenv("TRIAGEM_MONTHLY_ANALYSIS_LIMIT", "300")
     monkeypatch.setattr(
+        stripe.checkout.Session,
+        "list_line_items",
+        lambda *args, **kw: {
+            "data": [{"price": {"id": "price_plano"}, "quantity": 1}],
+            "has_more": False,
+        },
+    )
+    monkeypatch.setattr(
         billing,
         "_plano",
         lambda: {
@@ -415,7 +423,13 @@ def test_checkout_consulta_sessao_conhecida_antes_de_criar_nova(banco, monkeypat
         stripe.checkout.Session,
         "retrieve",
         lambda *args: stripe.StripeObject.construct_from(
-            {"id": "cs_existente", "status": "open", "url": "https://checkout.stripe.com/reuse"},
+            {
+                "id": "cs_existente",
+                "status": "open",
+                "mode": "subscription",
+                "customer": "cus_1",
+                "url": "https://checkout.stripe.com/reuse",
+            },
             "sk_test",
         ),
     )
@@ -438,7 +452,12 @@ def test_checkout_aguarda_pagamento_em_confirmacao(banco, monkeypatch):
     monkeypatch.setattr(
         stripe.checkout.Session,
         "retrieve",
-        lambda *args: {"id": "cs_completa", "status": "complete", "subscription": "sub_nova"},
+        lambda *args: {
+            "id": "cs_completa",
+            "status": "complete",
+            "customer": "cus_1",
+            "subscription": "sub_nova",
+        },
     )
     criar = Mock()
     monkeypatch.setattr(stripe.checkout.Session, "create", criar)
@@ -524,3 +543,187 @@ def test_limite_chamadas_checkout_antes_do_stripe(banco, monkeypatch):
         with pytest.raises(HTTPException) as erro:
             billing.criar_checkout(usuario, db)
         assert erro.value.status_code == 429
+
+
+@pytest.mark.parametrize("status_valido", ["active", "trialing"])
+@pytest.mark.parametrize(
+    "problema_nova", ["incomplete", "past_due", "unpaid", "canceled", "preco_errado", "expirada"]
+)
+def test_reconciliacao_preserva_assinatura_valida_antes_de_tentativa_nova(
+    banco,
+    monkeypatch,
+    status_valido,
+    problema_nova,
+):
+    valida = assinatura(status_valido, id="sub_valida", created=10)
+    nova = assinatura(id="sub_nova", created=20)
+    if problema_nova == "preco_errado":
+        nova["items"]["data"][0]["price"]["id"] = "price_outro"
+    elif problema_nova == "expirada":
+        nova["items"]["data"][0]["current_period_end"] = int(time.time()) - 60
+    else:
+        nova["status"] = problema_nova
+    for indice, objetos in enumerate(([nova, valida], [valida, nova])):
+        monkeypatch.setattr(stripe.Subscription, "list", Mock(return_value={"data": objetos}))
+        with banco() as db:
+            billing._processar_evento(db, evento(f"evt_ordem_{indice}", snapshot=nova))
+            registro = db.get(AssinaturaDB, "u1")
+            assert registro.stripe_subscription_id == "sub_valida"
+            assert registro.status == status_valido
+            assert billing.assinatura_ativa(registro)
+
+
+@pytest.mark.parametrize("problema", ["preco_errado", "expirada", "sem_periodo"])
+def test_reconciliacao_sem_assinatura_elegivel_nao_concede_acesso(banco, monkeypatch, problema):
+    candidata = assinatura(id="sub_candidata", created=10)
+    if problema == "preco_errado":
+        candidata["items"]["data"][0]["price"]["id"] = "price_outro"
+    elif problema == "expirada":
+        candidata["items"]["data"][0]["current_period_end"] = int(time.time()) - 60
+    else:
+        candidata["items"]["data"][0].pop("current_period_end")
+    monkeypatch.setattr(
+        stripe.Subscription,
+        "list",
+        lambda **kw: {
+            "data": [candidata, assinatura("incomplete", id="sub_nova", created=20)],
+        },
+    )
+    with banco() as db:
+        billing._processar_evento(db, evento())
+        assert not billing.assinatura_ativa(db.get(AssinaturaDB, "u1"))
+
+
+def _checkout_aberto(identificador):
+    return {
+        "id": identificador,
+        "status": "open",
+        "mode": "subscription",
+        "customer": "cus_1",
+        "url": f"https://checkout.stripe.com/{identificador}",
+    }
+
+
+@pytest.mark.parametrize("fonte", ["lista", "controle"])
+@pytest.mark.parametrize(
+    "itens_antigos",
+    [
+        {"data": [{"price": {"id": "price_antigo"}, "quantity": 1}]},
+        {"data": [{"price": {"id": "price_plano"}, "quantity": 2}]},
+        {
+            "data": [
+                {"price": {"id": "price_plano"}, "quantity": 1},
+                {"price": {"id": "price_extra"}, "quantity": 1},
+            ]
+        },
+    ],
+)
+def test_checkout_expira_preco_ou_itens_incompativeis_antes_de_nova_sessao(
+    banco,
+    monkeypatch,
+    fonte,
+    itens_antigos,
+):
+    antiga = _checkout_aberto("cs_antiga")
+    operacoes = []
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **kw: {"data": []})
+    monkeypatch.setattr(
+        stripe.checkout.Session, "list", lambda **kw: {"data": [antiga] if fonte == "lista" else []}
+    )
+    monkeypatch.setattr(stripe.checkout.Session, "retrieve", lambda *args: antiga)
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "list_line_items",
+        lambda *args, **kw: stripe.StripeObject.construct_from(itens_antigos, "sk_test"),
+    )
+
+    def expirar(identificador, **kwargs):
+        operacoes.append(("expirar", identificador))
+        assert kwargs["idempotency_key"] == "expire-checkout-cs_antiga"
+        return {"id": identificador, "status": "expired"}
+
+    def criar(**kwargs):
+        assert operacoes == [("expirar", "cs_antiga")]
+        operacoes.append(("criar", "cs_nova"))
+        assert kwargs["line_items"] == [{"price": "price_plano", "quantity": 1}]
+        material = "u1:price_plano:cs_antiga"
+        assert (
+            kwargs["idempotency_key"] == "checkout-" + hashlib.sha256(material.encode()).hexdigest()
+        )
+        return _checkout_aberto("cs_nova")
+
+    monkeypatch.setattr(stripe.checkout.Session, "expire", expirar)
+    monkeypatch.setattr(stripe.checkout.Session, "create", criar)
+    with banco() as db:
+        if fonte == "controle":
+            db.add(BillingControleDB(usuario_id="u1", checkout_session_id="cs_antiga"))
+            db.commit()
+        assert billing.criar_checkout(db.get(Usuario, "u1"), db)["url"].endswith("/cs_nova")
+        assert db.get(BillingControleDB, "u1").checkout_session_id == "cs_nova"
+        assert operacoes == [("expirar", "cs_antiga"), ("criar", "cs_nova")]
+
+
+@pytest.mark.parametrize(
+    "erro",
+    [
+        stripe.APIConnectionError("indisponivel"),
+        stripe.InvalidRequestError("Session is complete", param="id"),
+    ],
+)
+def test_checkout_nao_cria_novo_se_expiracao_falha_ou_pagamento_vence_corrida(
+    banco, monkeypatch, erro
+):
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **kw: {"data": []})
+    monkeypatch.setattr(
+        stripe.checkout.Session, "list", lambda **kw: {"data": [_checkout_aberto("cs_antiga")]}
+    )
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "list_line_items",
+        lambda *args, **kw: {
+            "data": [{"price": {"id": "price_antigo"}, "quantity": 1}],
+        },
+    )
+    monkeypatch.setattr(stripe.checkout.Session, "expire", Mock(side_effect=erro))
+    criar = Mock()
+    monkeypatch.setattr(stripe.checkout.Session, "create", criar)
+    with banco() as db:
+        with pytest.raises(HTTPException) as falha:
+            billing.criar_checkout(db.get(Usuario, "u1"), db)
+        assert falha.value.status_code == 503
+        criar.assert_not_called()
+        assert db.get(BillingControleDB, "u1") is None
+
+
+def test_checkout_expira_incompativel_mesmo_quando_ha_sessao_correta_na_primeira_pagina(
+    banco, monkeypatch
+):
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **kw: {"data": []})
+    listar = Mock(
+        side_effect=[
+            {"data": [_checkout_aberto("cs_valida")], "has_more": True},
+            {"data": [_checkout_aberto("cs_antiga")], "has_more": False},
+        ]
+    )
+    monkeypatch.setattr(stripe.checkout.Session, "list", listar)
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "list_line_items",
+        lambda id, **kw: {
+            "data": [
+                {
+                    "price": {"id": "price_plano" if id == "cs_valida" else "price_antigo"},
+                    "quantity": 1,
+                }
+            ],
+        },
+    )
+    expirar = Mock(return_value={"id": "cs_antiga", "status": "expired"})
+    criar = Mock()
+    monkeypatch.setattr(stripe.checkout.Session, "expire", expirar)
+    monkeypatch.setattr(stripe.checkout.Session, "create", criar)
+    with banco() as db:
+        assert billing.criar_checkout(db.get(Usuario, "u1"), db)["url"].endswith("/cs_valida")
+        expirar.assert_called_once_with("cs_antiga", idempotency_key="expire-checkout-cs_antiga")
+        criar.assert_not_called()
+        assert listar.call_args.kwargs["starting_after"] == "cs_valida"

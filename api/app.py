@@ -251,10 +251,20 @@ def excluir_conta(
     db: Session = Depends(sessao),
 ):
     limitar_auth(request, db, "excluir", usuario.email)
+    # Serializa com redefinição de senha, cobrança e worker, inclusive em SQLite.
+    # A dependência de autenticação pode ter carregado a senha antes de um reset.
+    db.execute(
+        update(Usuario).where(Usuario.id == usuario.id).values(id=Usuario.id),
+        execution_options={"synchronize_session": False},
+    )
+    usuario = db.scalar(
+        select(Usuario).where(Usuario.id == usuario.id)
+        .execution_options(populate_existing=True).with_for_update()
+    )
+    if usuario is None or not usuario.ativo:
+        raise HTTPException(401, "Conta não encontrada.")
     if not verificar_senha(payload.senha, usuario.senha_hash):
         raise HTTPException(403, "Senha incorreta.")
-    # A mesma linha é travada pelo worker antes de persistir resultados.
-    db.execute(select(Usuario.id).where(Usuario.id == usuario.id).with_for_update())
     encerrar_cobranca_para_exclusao(db, usuario)
     # Exclusão explícita também em SQLite, inclusive tabelas sem relationship ORM.
     for tabela in reversed(Base.metadata.sorted_tables):

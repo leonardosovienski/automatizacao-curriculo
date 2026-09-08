@@ -9,14 +9,16 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 import stripe
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Response
 from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -251,3 +253,64 @@ def test_postgres_webhook_duplicado_concorrente_e_cascade_conta(postgres, monkey
         assert db.scalar(select(func.count()).select_from(UsoMensalDB)) == 0
         # Auditoria guarda apenas ID/tipo de evento, sem dados pessoais do cliente.
         assert db.scalar(select(func.count()).select_from(EventoStripeDB)) == 1
+
+
+def test_postgres_exclusao_aguarda_reset_e_revalida_senha_carregada(postgres, monkeypatch):
+    from api import app as api_app
+    from api.auth import hash_senha, verificar_senha
+
+    fabrica, _, _ = postgres
+    criar_usuario(fabrica)
+    senha_antiga = "senha-antiga-sintetica-123"
+    senha_nova = "senha-nova-sintetica-456"
+    with fabrica() as db:
+        db.get(Usuario, "u1").senha_hash = hash_senha(senha_antiga)
+        db.commit()
+
+    cancelar = Mock()
+    monkeypatch.setattr(api_app, "encerrar_cobranca_para_exclusao", cancelar)
+    monkeypatch.setattr(api_app, "limitar_auth", lambda *_: None)
+    usuario_carregado = Event()
+
+    def excluir_com_identidade_anterior():
+        with fabrica() as db:
+            # MVCC permite autenticar com o valor ainda confirmado enquanto o reset
+            # mantém a nova senha não confirmada em outra transação.
+            usuario = db.get(Usuario, "u1")
+            assert verificar_senha(senha_antiga, usuario.senha_hash)
+            usuario_carregado.set()
+            try:
+                api_app.excluir_conta(
+                    api_app.ExcluirContaPayload(senha=senha_antiga),
+                    Request({"type": "http", "method": "DELETE", "path": "/api/auth/me"}),
+                    Response(),
+                    usuario,
+                    db,
+                )
+            except HTTPException as erro:
+                return erro.status_code
+            return 204
+
+    novo_hash = hash_senha(senha_nova)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        # O contexto interno sempre libera o lock antes de aguardar o executor,
+        # inclusive se uma asserção falhar, evitando travar a própria suíte.
+        with fabrica.begin() as reset:
+            usuario = reset.scalar(
+                select(Usuario).where(Usuario.id == "u1").with_for_update()
+            )
+            usuario.senha_hash = novo_hash
+            reset.flush()
+            exclusao = executor.submit(excluir_com_identidade_anterior)
+            assert usuario_carregado.wait(10), "A exclusão não carregou a identidade anterior"
+            with pytest.raises(FutureTimeoutError):
+                exclusao.result(timeout=0.2)
+        assert exclusao.result(timeout=10) == 403
+
+    cancelar.assert_not_called()
+    with fabrica() as db:
+        usuario = db.get(Usuario, "u1")
+        assert usuario is not None
+        assert verificar_senha(senha_nova, usuario.senha_hash)
+        assert not verificar_senha(senha_antiga, usuario.senha_hash)
+        assert db.get(AssinaturaDB, "u1").status == "active"

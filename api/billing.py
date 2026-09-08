@@ -261,6 +261,40 @@ def _itens(objeto: dict) -> list:
     return (objeto.get("items") or {}).get("data") or []
 
 
+def _preco_e_periodo(objeto: dict) -> tuple[str | None, datetime | None]:
+    itens = _itens(objeto)
+    item = next(
+        (i for i in itens if (i.get("price") or {}).get("id") == os.environ.get("STRIPE_PRICE_ID")),
+        None,
+    )
+    item = item or (itens[0] if itens else {})
+    # Basil moveu o período para os itens; fallback para versões antigas.
+    fim = item.get("current_period_end") or objeto.get("current_period_end")
+    return (item.get("price") or {}).get("id"), (
+        datetime.fromtimestamp(fim, tz=timezone.utc) if fim else None
+    )
+
+
+def _prioridade_assinatura(objeto: dict) -> tuple:
+    preco, fim = _preco_e_periodo(objeto)
+    preco_esperado = os.environ.get("STRIPE_PRICE_ID")
+    concede_acesso = bool(
+        objeto.get("id")
+        and objeto.get("status") in _STATUS_ATIVOS
+        and preco_esperado
+        and preco == preco_esperado
+        and fim
+        and fim > _agora()
+    )
+    return (
+        concede_acesso,
+        objeto.get("status") not in _STATUS_TERMINAIS,
+        bool(preco_esperado and preco == preco_esperado),
+        objeto.get("created", 0),
+        objeto.get("id", ""),
+    )
+
+
 def _aplicar_evento_assinatura(db: Session, objeto: dict) -> None:
     """Aplica somente objetos consultados na API Stripe, nunca snapshots atrasados."""
     assinatura = db.scalar(
@@ -272,16 +306,7 @@ def _aplicar_evento_assinatura(db: Session, objeto: dict) -> None:
         return
     assinatura.stripe_subscription_id = objeto.get("id")
     assinatura.status = objeto.get("status", "inativa")
-    itens = _itens(objeto)
-    item = next(
-        (i for i in itens if (i.get("price") or {}).get("id") == os.environ.get("STRIPE_PRICE_ID")),
-        None,
-    )
-    item = item or (itens[0] if itens else {})
-    assinatura.preco_id = (item.get("price") or {}).get("id")
-    # Basil moveu o período para os itens; fallback para versões antigas.
-    fim = item.get("current_period_end") or objeto.get("current_period_end")
-    assinatura.periodo_atual_fim = datetime.fromtimestamp(fim, tz=timezone.utc) if fim else None
+    assinatura.preco_id, assinatura.periodo_atual_fim = _preco_e_periodo(objeto)
 
 
 def _reconciliar(db: Session, assinatura: AssinaturaDB) -> list:
@@ -292,19 +317,10 @@ def _reconciliar(db: Session, assinatura: AssinaturaDB) -> list:
         assinatura.periodo_atual_fim = None
         assinatura.preco_id = None
         return []
-    # Eventos de assinaturas antigas não revogam uma nova assinatura ativa.
-    escolhida = max(
-        assinaturas,
-        key=lambda item: (
-            item.get("status") not in _STATUS_TERMINAIS,
-            any(
-                (i.get("price") or {}).get("id") == os.environ.get("STRIPE_PRICE_ID")
-                for i in _itens(item)
-            ),
-            item.get("created", 0),
-            item.get("id", ""),
-        ),
-    )
+    # Preserva acesso já pago diante de uma assinatura incompleta mais recente.
+    # Data só desempata depois de status, preço e período válidos para acesso.
+    # Sem nenhuma assinatura elegível, o estado continua sem conceder acesso.
+    escolhida = max(assinaturas, key=_prioridade_assinatura)
     _aplicar_evento_assinatura(db, escolhida)
     db.flush()
     return assinaturas
@@ -365,6 +381,32 @@ def _obter_ou_criar_assinatura(db: Session, usuario: Usuario) -> AssinaturaDB:
     return assinatura
 
 
+def _listar_checkouts_abertos(customer_id: str) -> list:
+    resultado = []
+    parametros = {"customer": customer_id, "status": "open", "limit": 100}
+    while True:
+        pagina = _dados(stripe.checkout.Session.list(**parametros))
+        dados = pagina.get("data", [])
+        resultado.extend(dados)
+        if not pagina.get("has_more") or not dados:
+            return resultado
+        parametros["starting_after"] = dados[-1]["id"]
+
+
+def _checkout_compativel(checkout: dict) -> bool:
+    # Consulta itens autoritativos: metadata ou o preço configurado hoje não
+    # provam qual preço uma sessão já aberta efetivamente cobrará.
+    itens = _dados(stripe.checkout.Session.list_line_items(checkout["id"], limit=100))
+    linhas = itens.get("data", [])
+    return bool(
+        checkout.get("url")
+        and not itens.get("has_more")
+        and len(linhas) == 1
+        and (linhas[0].get("price") or {}).get("id") == os.environ.get("STRIPE_PRICE_ID")
+        and linhas[0].get("quantity") == 1
+    )
+
+
 @router.post("/checkout")
 def criar_checkout(
     usuario: Usuario = Depends(usuario_atual), db: Session = Depends(sessao)
@@ -389,21 +431,15 @@ def criar_checkout(
             controle = BillingControleDB(usuario_id=usuario.id)
             db.add(controle)
         # Recupera sessões mesmo se a resposta/commit anterior falhou.
-        abertas = _dados(
-            stripe.checkout.Session.list(
-                customer=assinatura.stripe_customer_id, status="open", limit=100
-            )
-        )
-        for aberta in abertas.get("data", []):
-            if aberta.get("mode") == "subscription" and aberta.get("url"):
-                controle.checkout_session_id = aberta["id"]
-                db.commit()
-                return {"url": aberta["url"]}
-        if controle.checkout_session_id:
+        abertas = _listar_checkouts_abertos(assinatura.stripe_customer_id)
+        if controle.checkout_session_id and not any(
+            aberta["id"] == controle.checkout_session_id for aberta in abertas
+        ):
             anterior = _dados(stripe.checkout.Session.retrieve(controle.checkout_session_id))
-            if anterior.get("status") == "open" and anterior.get("url"):
-                db.commit()
-                return {"url": anterior["url"]}
+            if anterior.get("customer") != assinatura.stripe_customer_id:
+                raise HTTPException(409, "A sessão de cobrança não corresponde a esta conta.")
+            if anterior.get("status") == "open":
+                abertas.append(anterior)
             assinatura_anterior = anterior.get("subscription")
             if anterior.get("status") == "complete" and not any(
                 item.get("id") == assinatura_anterior for item in assinaturas
@@ -412,6 +448,31 @@ def criar_checkout(
                 raise HTTPException(
                     409, "O pagamento está sendo confirmado. Aguarde e atualize a assinatura."
                 )
+        reutilizavel = None
+        for aberta in abertas:
+            if aberta.get("mode") != "subscription":
+                continue
+            if _checkout_compativel(aberta):
+                reutilizavel = reutilizavel or aberta
+                continue
+            # Bloqueia o link antigo antes de abrir qualquer nova cobrança.
+            # Se um pagamento vencer essa corrida, Stripe recusará a expiração;
+            # propagamos a falha sem criar uma segunda assinatura.
+            encerrada = _dados(
+                stripe.checkout.Session.expire(
+                    aberta["id"],
+                    idempotency_key=f"expire-checkout-{aberta['id']}",
+                )
+            )
+            if encerrada.get("status") != "expired":
+                raise HTTPException(
+                    409, "A cobrança anterior está sendo confirmada. Atualize a assinatura."
+                )
+            controle.checkout_session_id = encerrada["id"]
+        if reutilizavel:
+            controle.checkout_session_id = reutilizavel["id"]
+            db.commit()
+            return {"url": reutilizavel["url"]}
         material = f"{usuario.id}:{os.environ['STRIPE_PRICE_ID']}:{controle.checkout_session_id or 'inicial'}"
         checkout = _dados(
             stripe.checkout.Session.create(
