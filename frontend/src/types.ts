@@ -91,7 +91,7 @@ export const DIMENSAO_LABEL: Record<string, string> = {
   d1_crescimento: "Crescimento",
   d2_regime_localizacao: "Regime / Localização",
   d3_stack_fit: "Stack fit",
-  d4_ingles: "Inglês",
+  d4_ingles: "Idiomas",
   d5_nivel_real: "Nível real",
 };
 
@@ -114,6 +114,6 @@ export interface StatusAssinatura {
 export const NIVEL_LABEL: Record<string, string> = {
   estagio: "Estágio",
   jr: "Júnior",
-  pleno_disfarcado: "Pleno (disfarçado)",
+  pleno_disfarcado: "Pleno",
   senior: "Sênior",
 };

@@ -26,6 +26,7 @@ def test_perfil_personalizado_alimenta_busca_e_prompt():
         areas=["Data Engineering", "Python"],
         senioridades=["Pleno"],
         tecnologias=["Airflow", "dbt"],
+        idiomas=["Português", "Francês"],
         onboarding_concluido=True,
         consentimento_ia=True,
     )
@@ -37,7 +38,52 @@ def test_perfil_personalizado_alimenta_busca_e_prompt():
     assert "Ana" in system_prompt()
     assert "Lisboa, Porto" in system_prompt()
     assert "Data Engineering, Python" in system_prompt()
+    assert "Idiomas declarados: Português, Francês" in system_prompt()
     assert "remotas em Portugal" in perfil.pedido_padrao()
+
+
+def test_prompt_de_cada_perfil_nao_inclui_identidade_ou_preferencias_legadas():
+    perfis = [
+        perfil_usuario.PerfilUsuario(nome="Candidata Alfa", pais="Portugal",
+            cidades_aceitas=["Lisboa", "Porto"], areas=["Data Engineering"],
+            senioridades=["Pleno"], tecnologias=["Airflow"], idiomas=["Francês"]),
+        perfil_usuario.PerfilUsuario(nome="Candidato Beta", pais="Canadá",
+            cidades_aceitas=["Toronto"], areas=["Java"], senioridades=["Sênior"],
+            tecnologias=["Spring"], idiomas=["Inglês"]),
+    ]
+    prompts = []
+    for perfil in perfis:
+        perfil_usuario.salvar(perfil)
+        system_prompt.cache_clear()
+        prompt = system_prompt()
+        prompts.append(prompt)
+        assert f"- País: {perfil.pais}" in prompt
+        assert f"- Senioridades aceitas: {perfil.senioridades[0]}" in prompt
+        assert f"- Idiomas declarados: {perfil.idiomas[0]}" in prompt
+        assert "configuração ativa" in prompt
+        assert "currículo" in prompt
+        for dado_legado in ("Leo", "Volvo", "TOEIC", "Curitiba", "Araucária", "Information Systems", "C#"):
+            assert dado_legado not in prompt
+    assert "Candidato Beta" not in prompts[0]
+    assert "Toronto" not in prompts[0]
+    assert "Candidata Alfa" not in prompts[1]
+    assert "Airflow" not in prompts[1]
+    assert "nenhuma linguagem ou área" in prompts[1]
+    assert "Pleno e sênior são" in prompts[1]
+
+
+def test_prompt_apresenta_pesos_do_usuario_e_nao_presume_fluencia():
+    perfil = perfil_usuario.PerfilUsuario(idiomas=[], pesos={
+        "d1_crescimento": 0.10, "d2_regime_localizacao": 0.20, "d3_stack_fit": 0.40,
+        "d4_ingles": 0.10, "d5_nivel_real": 0.20,
+    })
+    perfil_usuario.salvar(perfil)
+    system_prompt.cache_clear()
+    prompt = system_prompt()
+    assert "Idiomas declarados: não informados" in prompt
+    assert "d3_stack_fit: peso 40%" in prompt
+    assert "peso 30%" not in prompt
+    assert "Não presuma\nfluência" in prompt
 
 
 def test_salvar_e_carregar_perfil_sem_perder_dados(perfil_isolado):
