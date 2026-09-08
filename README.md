@@ -9,6 +9,7 @@ O CLI local continua disponível.
 A imagem Docker entrega frontend, API e fila durável. Configure domínio, PostgreSQL,
 Stripe, Gemini, SMTP e documentos do operador e valide os serviços reais antes de vender.
 As validações históricas abaixo se referem ao CLI e não certificam a operação SaaS.
+Veja também as [correções e a validação da consolidação SaaS](docs/VALIDACAO_SAAS.md).
 
 > Retomando o projeto? Consulte [HANDOFF.md](HANDOFF.md) e os gates atuais de CI.
 

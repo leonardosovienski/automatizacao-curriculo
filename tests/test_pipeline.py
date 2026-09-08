@@ -624,7 +624,7 @@ def test_resolver_router_segue_location_sem_baixar_corpo(monkeypatch):
         chamadas.append(("head", url, kwargs.get("follow_redirects")))
         return _Resposta("https://www.adzuna.com.br/details/5815842825")
 
-    monkeypatch.setattr("triagem.buscador.httpx.head", _head)
+    monkeypatch.setattr("triagem.buscador.rede_segura.head", _head)
     monkeypatch.setattr("triagem.buscador._esperar_vez", lambda _: None)
 
     final = _resolver_router(
@@ -637,8 +637,8 @@ def test_resolver_router_segue_location_sem_baixar_corpo(monkeypatch):
 
 def test_resolver_router_devolve_a_original_quando_nao_ha_location(monkeypatch):
     sem_location = type("R", (), {"headers": {}})()
-    monkeypatch.setattr("triagem.buscador.httpx.head", lambda url, **k: sem_location)
-    monkeypatch.setattr("triagem.buscador.httpx.get", lambda url, **k: sem_location)
+    monkeypatch.setattr("triagem.buscador.rede_segura.head", lambda url, **k: sem_location)
+    monkeypatch.setattr("triagem.buscador.rede_segura.get", lambda url, **k: sem_location)
     monkeypatch.setattr("triagem.buscador._esperar_vez", lambda _: None)
     url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/X"
     assert _resolver_router(url) == url
@@ -648,8 +648,8 @@ def test_resolver_router_nao_toca_em_url_que_nao_e_roteador(monkeypatch):
     def _explode(*a, **k):
         raise AssertionError("não deveria haver requisição para host normal")
 
-    monkeypatch.setattr("triagem.buscador.httpx.head", _explode)
-    monkeypatch.setattr("triagem.buscador.httpx.get", _explode)
+    monkeypatch.setattr("triagem.buscador.rede_segura.head", _explode)
+    monkeypatch.setattr("triagem.buscador.rede_segura.get", _explode)
     url = "https://www.adzuna.com.br/details/1"
     assert _resolver_router(url) == url
 
@@ -1810,7 +1810,7 @@ def test_redirect_para_rede_privada_e_bloqueado_antes_da_segunda_requisicao(monk
         chamadas.append((url, kwargs["follow_redirects"]))
         return Resposta()
 
-    monkeypatch.setattr("triagem.buscador.httpx.get", redireciona)
+    monkeypatch.setattr("triagem.buscador.rede_segura.get", redireciona)
     with pytest.raises(httpx.InvalidURL):
         _obter("https://agregador.teste/vaga/123")
     assert chamadas == [("https://agregador.teste/vaga/123", False)]

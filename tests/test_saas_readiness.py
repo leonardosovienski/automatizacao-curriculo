@@ -1,8 +1,11 @@
 """Fluxos de conta, materiais e configuração usando a aplicação integrada."""
 
+import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -155,6 +158,49 @@ def test_exportacao_completa_sem_tokens_e_exclusao_sem_orfaos(ambiente):
         for tabela in Base.metadata.sorted_tables:
             if "usuario_id" in tabela.c:
                 assert not db.execute(select(tabela).where(tabela.c.usuario_id == ana)).first(), tabela.name
+
+
+def test_exclusao_em_andamento_rejeita_senha_antiga_apos_reset(ambiente, monkeypatch):
+    cliente, fabrica, _, canceladas = ambiente
+    usuario_id, headers = cadastrar(cliente)
+    token = "token-de-recuperacao-para-teste-de-corrida"
+    with fabrica() as db:
+        db.add(RecuperacaoSenhaDB(
+            usuario_id=usuario_id, token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expira_em=datetime.now(timezone.utc) + timedelta(minutes=30),
+        ))
+        db.commit()
+
+    autenticada, continuar = Event(), Event()
+    limitar_original = api_app.limitar_auth
+
+    def pausar_apos_autenticacao(*args, **kwargs):
+        limitar_original(*args, **kwargs)
+        autenticada.set()
+        assert continuar.wait(15), "A exclusão não foi liberada após o reset"
+
+    monkeypatch.setattr(api_app, "limitar_auth", pausar_apos_autenticacao)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        exclusao = executor.submit(
+            cliente.request, "DELETE", "/api/auth/me", headers=headers,
+            json={"senha": "senha-forte-123"},
+        )
+        try:
+            assert autenticada.wait(15), "A exclusão não chegou à etapa autenticada"
+            reset = cliente.post("/api/auth/redefinir-senha", json={
+                "token": token, "senha": "nova-senha-forte-456",
+            })
+            assert reset.status_code == 200, reset.text
+        finally:
+            continuar.set()
+        resposta = exclusao.result(timeout=15)
+    assert resposta.status_code == 403, resposta.text
+    assert not canceladas
+    with fabrica() as db:
+        usuario = db.get(Usuario, usuario_id)
+        assert usuario is not None
+        assert api_app.verificar_senha("nova-senha-forte-456", usuario.senha_hash)
+    assert cliente.get("/api/auth/me", headers=headers).status_code == 401
 
 
 def test_exclusao_preserva_conta_quando_cancelamento_cobranca_falha(ambiente, monkeypatch):

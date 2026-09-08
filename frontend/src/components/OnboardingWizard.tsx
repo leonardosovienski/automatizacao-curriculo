@@ -19,6 +19,9 @@ export function OnboardingWizard({ open, obrigatorio = false, onClose, onComplet
   const [listas, setListas] = useState<Record<Lists, string>>({ areas: "", senioridades: "", cidades_aceitas: "", tecnologias: "", idiomas: "" });
   const [cv, setCV] = useState("");
   const [salvando, setSalvando] = useState(false);
+  const [revogando, setRevogando] = useState(false);
+  const [consentimentoSalvo, setConsentimentoSalvo] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [tentativa, setTentativa] = useState(0);
@@ -26,16 +29,38 @@ export function OnboardingWizard({ open, obrigatorio = false, onClose, onComplet
     if (!open) return;
     let ativo = true;
     // oxlint-disable-next-line react/set-state-in-effect -- Reopening the editor reloads the saved profile instead of stale unsaved fields.
-    setErro(null); setCarregando(true); setPerfil(null);
+    setErro(null); setAviso(null); setCarregando(true); setPerfil(null);
     Promise.all([obterPerfil(), obterCV()]).then(([p, conteudo]) => {
       if (!ativo) return;
-      setPerfil(p); setCV(conteudo);
+      setPerfil(p); setCV(conteudo); setConsentimentoSalvo(p.consentimento_ia);
       setListas({ areas: p.areas.join(", "), senioridades: p.senioridades.join(", "), cidades_aceitas: p.cidades_aceitas.join(", "), tecnologias: p.tecnologias.join(", "), idiomas: p.idiomas.join(", ") });
     }).catch((e) => { if (ativo) setErro(mensagemErro(e, "Não foi possível carregar seu perfil.")); })
       .finally(() => { if (ativo) setCarregando(false); });
     return () => { ativo = false; };
   }, [open, tentativa]);
   function alterar<K extends keyof PerfilUsuario>(campo: K, valor: PerfilUsuario[K]) { setPerfil((p) => p ? { ...p, [campo]: valor } : p); }
+  async function alterarConsentimento(autorizado: boolean) {
+    if (autorizado || !consentimentoSalvo) {
+      alterar("consentimento_ia", autorizado);
+      setAviso(null);
+      return;
+    }
+    setRevogando(true); setErro(null); setAviso(null);
+    alterar("consentimento_ia", false);
+    try {
+      // Revoke against persisted data: incomplete edits and CV validation must
+      // never prevent withdrawal or accidentally save unrelated draft fields.
+      const persistido = await obterPerfil();
+      await salvarPerfil({ ...persistido, consentimento_ia: false });
+      setConsentimentoSalvo(false);
+      alterar("consentimento_ia", false);
+      setAviso("Permissão retirada. As outras alterações do perfil ainda precisam ser salvas.");
+      onComplete();
+    } catch (e) {
+      alterar("consentimento_ia", true);
+      setErro(mensagemErro(e, "Não foi possível retirar a permissão. Tente novamente."));
+    } finally { setRevogando(false); }
+  }
   async function concluir(event: React.FormEvent) {
     event.preventDefault();
     if (!perfil) return;
@@ -48,7 +73,7 @@ export function OnboardingWizard({ open, obrigatorio = false, onClose, onComplet
     catch (e) { setErro(mensagemErro(e, "Não foi possível salvar seu perfil. Tente novamente.")); }
     finally { setSalvando(false); }
   }
-  return <Modal title={obrigatorio ? "Configure seu perfil" : "Configurações do perfil"} open={open} onClose={salvando ? () => undefined : onClose} width="max-w-2xl">
+  return <Modal title={obrigatorio ? "Configure seu perfil" : "Configurações do perfil"} open={open} onClose={salvando || revogando ? () => undefined : onClose} width="max-w-2xl">
     {carregando && <p role="status" className="text-sm text-muted">Carregando seu perfil…</p>}
     {!carregando && !perfil && <div className="space-y-4"><p role="alert" className="text-sm text-danger">{erro}</p><button onClick={() => setTentativa((n) => n + 1)} className="btn-primary">Tentar novamente</button></div>}
     {perfil && <form onSubmit={concluir} className="space-y-6 text-sm">
@@ -60,9 +85,9 @@ export function OnboardingWizard({ open, obrigatorio = false, onClose, onComplet
         <fieldset><legend className="mb-2 text-muted">Modalidades de trabalho</legend><div className="flex flex-wrap gap-4">{([['aceita_remoto', 'Remoto'], ['aceita_hibrido', 'Híbrido'], ['aceita_presencial', 'Presencial']] as const).map(([campo, label]) => <label key={campo} className="flex items-center gap-2"><input type="checkbox" checked={perfil[campo]} onChange={(e) => alterar(campo, e.target.checked)} />{label}</label>)}</div></fieldset>
       </section>
       <section className="space-y-2"><h3 className="font-semibold">2. Seu currículo</h3><p id="cv-ajuda" className="text-xs text-muted">Cole suas experiências, formação e competências. Evite incluir CPF, endereço, telefone e outras informações desnecessárias à análise.</p><label className="block space-y-1 text-muted">Currículo-base<textarea required minLength={50} maxLength={50000} aria-describedby="cv-ajuda" className="field min-h-52" placeholder="Resumo profissional, experiências, formação, projetos e competências…" value={cv} onChange={(e) => setCV(e.target.value)} /></label><p className="text-right text-xs text-muted">{cv.length.toLocaleString("pt-BR")} caracteres</p></section>
-      <section className="space-y-3"><h3 className="font-semibold">3. Permissão para análise com IA</h3><label className="flex items-start gap-2 text-muted"><input className="mt-1" type="checkbox" checked={perfil.consentimento_ia} onChange={(e) => alterar("consentimento_ia", e.target.checked)} /><span>Autorizo o envio do conteúdo profissional do meu currículo e dos textos das vagas ao Google Gemini para análise.</span></label><p className="text-xs text-muted">Você pode retirar essa permissão aqui a qualquer momento. Novas buscas ficam pausadas enquanto ela estiver desativada. Não inclua informações que você não queira compartilhar com o provedor de IA.</p></section>
+      <section className="space-y-3"><h3 className="font-semibold">3. Permissão para análise com IA</h3><label className="flex items-start gap-2 text-muted"><input className="mt-1" type="checkbox" checked={perfil.consentimento_ia} disabled={salvando || revogando} onChange={(e) => void alterarConsentimento(e.target.checked)} /><span>Autorizo o envio do conteúdo profissional do meu currículo e dos textos das vagas ao Google Gemini para análise.</span></label><p className="text-xs text-muted">Desmarcar retira a permissão imediatamente, mesmo sem concluir a configuração. Novas buscas ficam pausadas enquanto ela estiver desativada. Não inclua informações que você não queira compartilhar com o provedor de IA.</p>{revogando && <p role="status" className="text-xs text-muted">Retirando permissão…</p>}{aviso && <p role="status" className="text-xs text-accent">{aviso}</p>}</section>
       {erro && <p role="alert" className="rounded-md bg-danger/10 p-3 text-danger">{erro}</p>}
-      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4"><button type="button" disabled={salvando} className="rounded-md border border-border px-4 py-2 text-muted" onClick={onClose}>{obrigatorio ? "Configurar depois" : "Cancelar"}</button><button disabled={salvando} className="btn-primary">{salvando ? "Salvando…" : "Concluir configuração"}</button></div>
+      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4"><button type="button" disabled={salvando || revogando} className="rounded-md border border-border px-4 py-2 text-muted" onClick={onClose}>{obrigatorio ? "Configurar depois" : "Cancelar"}</button><button disabled={salvando || revogando} className="btn-primary">{salvando ? "Salvando…" : "Concluir configuração"}</button></div>
     </form>}
   </Modal>;
 }
