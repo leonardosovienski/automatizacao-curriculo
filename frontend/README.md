@@ -1,46 +1,37 @@
-# Triagem de Vagas — Frontend
+# Aplicação web
 
-Interface web para o histórico de vagas gerado pelo `triar` (ver `../api/app.py`
-para o backend). React 19 + TypeScript + Vite + Tailwind v4.
+Interface React em português para cadastro, recuperação de acesso, perfil e currículo, busca de vagas, geração de material de candidatura, cobrança e gestão da conta.
 
-## Como rodar
+## Desenvolvimento
 
-```bash
-# 1. Backend (na raiz do projeto)
-python -m uvicorn api.app:app --host 127.0.0.1 --port 8000
+Requisitos: Node.js 22.12+ (ou 24) e API Python disponível na porta 8000.
 
-# 2. Frontend
-cp .env.example .env.local   # ajuste VITE_API_URL se necessário
-npm install
+```sh
+npm ci
 npm run dev
 ```
 
-Abra `http://localhost:5173`, crie uma conta e conclua o perfil. A lista mostra somente as
-vagas pertencentes ao usuário autenticado no banco.
+O Vite encaminha `/api` e `/billing` à API local. Em produção, o Docker da raiz compila e serve a interface na mesma origem da API; deixe `VITE_API_URL` vazio. Uma URL externa só deve ser definida quando cookies e origens autorizadas estiverem corretamente configurados.
 
-> Em produção, configure PostgreSQL, `TRIAGEM_JWT_SECRET`, HTTPS e a origem CORS exata do
-> frontend. As chaves das fontes e da IA existem somente no backend do operador.
+## Verificação
 
-## Scripts
+```sh
+npm run lint
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
 
-- `npm run dev` — servidor de desenvolvimento
-- `npm run build` — build de produção (`tsc -b && vite build`)
-- `npm run lint` — oxlint
-- `npm run test:e2e` — suíte Playwright (desktop + mobile), gate obrigatório do CI
-- `npm run test:e2e:ui` / `:headed` / `:debug` — variações interativas
-- `npm run test:e2e:report` — abre o último relatório HTML
+A suíte abre sua própria API com banco isolado e a interface, em desktop e celular. Informe `E2E_PYTHON` com o caminho do Python que contém as dependências do projeto. No Windows, por exemplo, use o caminho absoluto de `.venv\Scripts\python.exe` da raiz. Não use um banco de produção em `TRIAGEM_DATABASE` para testes: o seed recria esse banco.
 
-A suíte E2E possui **42 testes em desktop e mobile** e é **auto-contida**: sobe API e Vite
-sozinha, com um banco SQLite
-isolado populado de um fixture estático — não toca no seu histórico real nem
-chama o Gemini. Ver [PLAYWRIGHT-SETUP.md](PLAYWRIGHT-SETUP.md).
+Os testes reais verificam autenticação, isolamento inicial de contas, filtros, ordenação e persistência dos status. Os cenários de Stripe, e-mail, busca com IA e geração de material usam respostas controladas para verificar os estados da interface sem cobranças nem chamadas externas. Eles não substituem a homologação das integrações em staging.
 
-## Contrato com a API
+## Contratos da interface
 
-`src/types.ts` espelha `api/app.py`. O enum `Status` tem os mesmos seis valores de
-`historico.StatusVaga` — se um lado mudar, o outro precisa mudar junto.
+- `GET /api/config/publico`: nome do serviço, contato de suporte e URLs públicas dos documentos legais. A aplicação aguarda essa configuração antes de mostrar o cadastro. Os documentos oficiais devem ser publicados e configurados pelo operador.
+- Recuperação: o link `/redefinir-senha#token=...` entrega o token pelo fragmento; a interface o remove do endereço e envia somente no corpo de `POST /api/auth/redefinir-senha`.
+- Checkout: `/?sucesso=1` chama `/billing/sincronizar` e verifica o estado no servidor antes de anunciar ativação; `/?cancelado=1` explica que o checkout foi encerrado. Preços e limites vêm da API.
+- Conta: exportação JSON autenticada e exclusão mediante senha e confirmação explícita; nenhuma senha ou sessão fica em localStorage.
+- Material de candidatura: geração assíncrona, acompanhamento e download Markdown para revisão; a interface não envia candidaturas automaticamente.
 
-Os campos `regime`, `nivel_real` e `idioma_trabalho` chegam como `string` livre, e
-não como união fechada, porque vêm dos dados persistidos, que podem ter
-registros de pipelines antigos. O fallback de label (`REGIME_LABEL[x] ?? x`) existe
-para isso — não é descuido.
+Consulte a documentação da raiz para publicação, migrações, backup, configuração de e-mail e Stripe e critérios de lançamento.

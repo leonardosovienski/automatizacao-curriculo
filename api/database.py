@@ -11,10 +11,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     String,
     Text,
     UniqueConstraint,
     create_engine,
+    event,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -22,7 +25,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 def _url_banco() -> str:
     configurada = os.environ.get("DATABASE_URL")
     if configurada:
-        return configurada.replace("postgres://", "postgresql+psycopg://", 1)
+        for prefixo in ("postgres://", "postgresql://"):
+            if configurada.startswith(prefixo):
+                return "postgresql+psycopg://" + configurada[len(prefixo):]
+        return configurada
     caminho = Path(os.environ.get("TRIAGEM_DATABASE") or Path.cwd() / "triagem.db")
     return f"sqlite:///{caminho.as_posix()}"
 
@@ -32,8 +38,16 @@ engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
     pool_pre_ping=True,
+    hide_parameters=True,
 )
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def _integridade_sqlite(connection, _record):
+    if DATABASE_URL.startswith("sqlite"):
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=10000")
 
 
 class Base(DeclarativeBase):
@@ -83,6 +97,11 @@ class VagaDB(Base):
 
 class BuscaDB(Base):
     __tablename__ = "buscas"
+    __table_args__ = (
+        Index("uq_busca_ativa_usuario", "usuario_id", unique=True,
+              sqlite_where=text("estado IN ('pendente', 'processando')"),
+              postgresql_where=text("estado IN ('pendente', 'processando')")),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     usuario_id: Mapped[str] = mapped_column(ForeignKey("usuarios.id", ondelete="CASCADE"), index=True)
@@ -95,10 +114,20 @@ class BuscaDB(Base):
     encontradas: Mapped[int] = mapped_column(default=0)
     criada_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     concluida_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    iniciada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expira_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    tipo: Mapped[str] = mapped_column(String(16), default="busca", server_default="busca")
+    vaga_alvo_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resultado: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AssinaturaDB(Base):
     __tablename__ = "assinaturas"
+    __table_args__ = (
+        Index("uq_assinaturas_customer", "stripe_customer_id", unique=True),
+        Index("uq_assinaturas_subscription", "stripe_subscription_id", unique=True),
+    )
 
     usuario_id: Mapped[str] = mapped_column(ForeignKey("usuarios.id", ondelete="CASCADE"), primary_key=True)
     stripe_customer_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -114,6 +143,7 @@ class AssinaturaDB(Base):
 
 
 def criar_tabelas() -> None:
+    from . import auth_models, billing_models  # noqa: F401
     Base.metadata.create_all(engine)
 
 

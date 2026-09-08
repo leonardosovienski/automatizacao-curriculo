@@ -1,12 +1,11 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: triagem
-      POSTGRES_PASSWORD: triagem
+      POSTGRES_PASSWORD: ${TRIAGEM_POSTGRES_PASSWORD:?Defina TRIAGEM_POSTGRES_PASSWORD no .env}
       POSTGRES_DB: triagem
-    ports:
-      - "5432:5432"
     volumes:
       - triagem-db:/var/lib/postgresql/data
     healthcheck:
@@ -14,18 +13,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  api:
+  app:
     build: .
-    env_file:
-      - .env
+    restart: unless-stopped
+    init: true
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://triagem:triagem@db/triagem
+      DATABASE_URL: postgresql+psycopg://triagem:${TRIAGEM_POSTGRES_PASSWORD}@db/triagem
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
-
 volumes:
   triagem-db:

@@ -25,7 +25,7 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
 
   test('carrega a aplicação e os controles principais', async ({ page }) => {
     await expect(
-      page.getByText('Scoring automático com Google Gemini')
+      page.getByText('Seu próximo passo profissional')
     ).toBeVisible();
 
     await expect(searchBox(page)).toBeVisible();
@@ -297,18 +297,18 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
   test('rota inexistente tem comportamento explícito', async ({ page }) => {
     await page.goto('/this-route-should-not-exist');
 
-    const titleVisible = await page
-      .getByRole('heading', { name: 'Triagem de Vagas' })
-      .isVisible()
-      .catch(() => false);
-
-    const body = (await page.locator('body').innerText()).toLowerCase();
-    const hasNotFound = /404|não encontrad|not found/.test(body);
-
-    expect(
-      titleVisible || hasNotFound,
-      'Rota inválida deve cair explicitamente na SPA ou apresentar 404.'
-    ).toBeTruthy();
+    let titleVisible = false;
+    let hasNotFound = false;
+    await expect.poll(async () => {
+      titleVisible = await page
+        .getByRole('heading', { name: 'Triagem de Vagas' })
+        .isVisible();
+      const body = (await page.locator('body').innerText()).toLowerCase();
+      hasNotFound = /404|não encontrad|not found/.test(body);
+      return titleVisible || hasNotFound;
+    }, {
+      message: 'Rota inválida deve cair explicitamente na SPA ou apresentar 404.',
+    }).toBe(true);
 
     if (titleVisible && !hasNotFound) {
       test.info().annotations.push({

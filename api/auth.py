@@ -1,4 +1,4 @@
-"""Autenticação por senha Argon2 e access token JWT curto."""
+"""Senhas Argon2 e sessões revogáveis validadas no banco a cada requisição."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -8,15 +8,19 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 from pwdlib import PasswordHash
+from pwdlib.exceptions import UnknownHashError
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from .auth_models import SessaoAuthDB
 from .database import Usuario, sessao
 
 password_hash = PasswordHash.recommended()
 bearer = HTTPBearer(auto_error=False)
 COOKIE_SESSAO = "triagem_session"
 ALGORITMO = "HS256"
-EXPIRACAO_MINUTOS = int(os.environ.get("TRIAGEM_TOKEN_MINUTES", "60"))
+EMISSOR = "triagem-vagas"
+AUDIENCIA = "triagem-api"
 
 
 def _segredo() -> str:
@@ -33,15 +37,39 @@ def hash_senha(senha: str) -> str:
 
 
 def verificar_senha(senha: str, hash_atual: str) -> bool:
-    return password_hash.verify(senha, hash_atual)
+    try:
+        return password_hash.verify(senha, hash_atual)
+    except (UnknownHashError, ValueError):
+        return False
 
 
-def criar_token(usuario: Usuario) -> str:
+def criar_token(usuario: Usuario, db: Session) -> str:
     agora = datetime.now(timezone.utc)
-    return jwt.encode(
-        {"sub": usuario.id, "iat": agora, "exp": agora + timedelta(minutes=EXPIRACAO_MINUTOS)},
+    expiracao = agora + timedelta(minutes=int(os.environ.get("TRIAGEM_TOKEN_MINUTES", "60")))
+    registro = SessaoAuthDB(usuario_id=usuario.id, expira_em=expiracao)
+    db.add(registro)
+    db.flush()
+    token = jwt.encode(
+        {"sub": usuario.id, "jti": registro.id, "iat": agora, "exp": expiracao,
+         "iss": EMISSOR, "aud": AUDIENCIA},
         _segredo(), algorithm=ALGORITMO,
     )
+    db.commit()
+    return token
+
+
+def decodificar_token(token: str) -> dict:
+    payload = jwt.decode(
+        token, _segredo(), algorithms=[ALGORITMO], issuer=EMISSOR, audience=AUDIENCIA,
+        options={"require": ["sub", "jti", "iat", "exp", "iss", "aud"]},
+    )
+    if not isinstance(payload["sub"], str) or not isinstance(payload["jti"], str):
+        raise InvalidTokenError("Identificador inválido.")
+    return payload
+
+
+def revogar_sessoes(db: Session, usuario_id: str) -> None:
+    db.execute(delete(SessaoAuthDB).where(SessaoAuthDB.usuario_id == usuario_id))
 
 
 def usuario_atual(
@@ -53,10 +81,19 @@ def usuario_atual(
     if not token:
         raise HTTPException(401, "Autenticação necessária.", headers={"WWW-Authenticate": "Bearer"})
     try:
-        payload = jwt.decode(token, _segredo(), algorithms=[ALGORITMO])
-        usuario_id = payload.get("sub")
+        payload = decodificar_token(token)
+        usuario_id = payload["sub"]
     except InvalidTokenError as e:
         raise HTTPException(401, "Sessão inválida ou expirada.") from e
+    registro = db.get(SessaoAuthDB, payload["jti"])
+    expiracao = registro.expira_em if registro else None
+    if expiracao and expiracao.tzinfo is None:
+        expiracao = expiracao.replace(tzinfo=timezone.utc)
+    if (
+        not registro or registro.usuario_id != usuario_id
+        or expiracao <= datetime.now(timezone.utc)
+    ):
+        raise HTTPException(401, "Sessão inválida ou expirada.")
     usuario = db.get(Usuario, usuario_id)
     if not usuario or not usuario.ativo:
         raise HTTPException(401, "Usuário inválido ou inativo.")

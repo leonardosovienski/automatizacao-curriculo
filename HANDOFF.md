@@ -1,6 +1,21 @@
+# Preparação SaaS — 2026-09-08
+
+Esta revisão acrescenta sessões revogáveis, recuperação SMTP, aceite de termos,
+CSRF/rate limit, cobrança Stripe reconciliada e cotas transacionais, fila durável
+com processos isolados, proteção do CV, material de candidatura na web e exclusão
+da conta com encerramento da cobrança. Docker entrega frontend e API na mesma origem.
+
+Veja [docs/OPERACAO_SAAS.md](docs/OPERACAO_SAAS.md) para configuração, migrações,
+backup, implantação e roteiro real de aceite. Credenciais, domínio, preço,
+identificação do operador e validação comercial não estão incluídos no código.
+Os registros anteriores abaixo descrevem validações históricas; o estado desta
+revisão deve ser conferido pelo PR e pelos resultados de CI do commit atual.
+
+---
+
 # Estado do projeto
 
-## Situação atual — pronto na `main`
+## Registro histórico de 2026-08-08 — CLI
 
 Em 2026-08-08, os PRs [#36](https://github.com/leonardosovienski/automatizacao-curriculo/pull/36)
 e [#37](https://github.com/leonardosovienski/automatizacao-curriculo/pull/37) foram

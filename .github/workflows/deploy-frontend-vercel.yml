@@ -1,43 +1,39 @@
-name: Deploy Frontend to Vercel
-
+# Optional split-host deployment. Prefer the full-stack Docker image.
+name: Deploy optional frontend to Vercel
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
+  workflow_dispatch:
 permissions:
   contents: read
-
+concurrency:
+  group: production-vercel
+  cancel-in-progress: false
 jobs:
-  build-and-deploy:
+  deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VITE_API_URL: ${{ vars.VITE_API_URL }}
+    defaults:
+      run:
+        working-directory: frontend
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Setup Node
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-      - name: Deploy to Vercel
-        if: env.VERCEL_TOKEN != ''
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          node-version: "22"
+      - name: Validate configuration (use app and API under the same parent domain)
         run: |
-          echo "Deploying to Vercel..."
-          # The Vercel CLI will pick up VERCEL_TOKEN from env
-          npm install -g vercel@28
-          cd frontend
-          vercel --prod --confirm --token "$VERCEL_TOKEN" --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID"
-      - name: Deploy instructions
-        if: env.VERCEL_TOKEN == ''
-        run: |
-          echo "No VERCEL_TOKEN secret found. To enable automatic deploys, add repository secrets: VERCEL_TOKEN, VERCEL_PROJECT_ID, VERCEL_ORG_ID."
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_PROJECT_ID"
+          test -n "$VERCEL_ORG_ID"
+          test -n "$VITE_API_URL"
+      - run: npm ci && npm run lint && npm run build
+      - run: npm install -g vercel
+      - run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - run: vercel build --prod --token="$VERCEL_TOKEN"
+      - run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"

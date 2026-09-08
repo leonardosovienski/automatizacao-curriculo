@@ -30,6 +30,7 @@ export default defineConfig({
 
   use: {
     baseURL: e2eBaseUrl,
+    channel: process.env.E2E_BROWSER_CHANNEL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -45,7 +46,7 @@ export default defineConfig({
     ? undefined
     : [
         {
-          command: `${process.env.E2E_PYTHON ?? 'python'} api/seed_e2e.py`,
+          command: `"${process.env.E2E_PYTHON ?? 'python'}" api/seed_e2e.py`,
           cwd: '..',
           env: {
             TRIAGEM_DATABASE: process.env.TRIAGEM_DATABASE ?? '.e2e.db',
@@ -58,7 +59,7 @@ export default defineConfig({
           timeout: 60_000,
         },
         {
-          command: `npm run dev -- --host 127.0.0.1 --port ${e2eFrontendPort}`,
+          command: `"${process.execPath}" node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${e2eFrontendPort}`,
           env: { VITE_API_URL: process.env.VITE_API_URL ?? e2eApiUrl },
           url: e2eBaseUrl,
           reuseExistingServer: !process.env.CI,

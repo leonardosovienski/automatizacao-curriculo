@@ -27,3 +27,21 @@
     font-family: var(--font-body);
   }
 }
+
+@layer components {
+  .field {
+    @apply w-full rounded-md border border-border bg-bg px-3 py-2.5 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none;
+  }
+  .btn-primary {
+    @apply rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-bg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+@layer base {
+  :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+  button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled), a { cursor: pointer; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+}

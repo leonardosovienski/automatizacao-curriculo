@@ -67,6 +67,7 @@ export interface BuscaVagas {
   id: string; pedido: string; limite: number; estado: EstadoBusca;
   progresso: number; mensagem: string; erro: string | null;
   encontradas: number; criada_em: string; concluida_em: string | null;
+  tipo?: "busca" | "material"; vaga_alvo_id?: string | null; resultado?: string | null;
 }
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -90,7 +91,7 @@ export const DIMENSAO_LABEL: Record<string, string> = {
   d1_crescimento: "Crescimento",
   d2_regime_localizacao: "Regime / Localização",
   d3_stack_fit: "Stack fit",
-  d4_ingles: "Inglês",
+  d4_ingles: "Idiomas",
   d5_nivel_real: "Nível real",
 };
 
@@ -105,11 +106,14 @@ export interface StatusAssinatura {
   status: string;
   ativa: boolean;
   periodo_atual_fim: string | null;
+  configurado: boolean;
+  plano: { nome: string; valor_centavos: number; moeda: string; intervalo: string; intervalo_contagem: number } | null;
+  uso: { mes: string; buscas_utilizadas: number; buscas_limite: number; analises_reservadas: number; analises_limite: number; reinicia_em: string };
 }
 
 export const NIVEL_LABEL: Record<string, string> = {
   estagio: "Estágio",
   jr: "Júnior",
-  pleno_disfarcado: "Pleno (disfarçado)",
+  pleno_disfarcado: "Pleno",
   senior: "Sênior",
 };

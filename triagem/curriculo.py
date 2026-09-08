@@ -108,7 +108,12 @@ def carregar_cv_base() -> str:
         raise FileNotFoundError(
             f"CV base não encontrado em {CV_BASE}. Crie o arquivo a partir do template do projeto."
         )
-    limpo, _ = remover_blocos_privados(CV_BASE.read_text(encoding="utf-8"))
+    return preparar_cv_para_ia(CV_BASE.read_text(encoding="utf-8"))
+
+
+def preparar_cv_para_ia(conteudo: str) -> str:
+    """A mesma proteção de privacidade para currículos do CLI e do SaaS."""
+    limpo, _ = remover_blocos_privados(conteudo)
     # Falha fechado: um marcador digitado errado deixava o bloco inteiro passar
     # em silêncio, e o telefone/e-mail do CV seguia para a API. Entre recusar a
     # execução e vazar dado pessoal, recusar é o comportamento certo.
@@ -118,7 +123,7 @@ def carregar_cv_base() -> str:
     )
     if residual:
         raise ValueError(
-            f"Marcador PRIVADO malformado em {CV_BASE}: {residual.group(0)!r}. "
+            "Marcador PRIVADO malformado no currículo. "
             "Um bloco privado precisa do par exato '<!-- PRIVADO -->' ... '<!-- /PRIVADO -->'. "
             "Enquanto isso não for corrigido o CV não é enviado à API, "
             "para não vazar dados pessoais."

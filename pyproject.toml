@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "triagem-vagas"
 version = "1.0.1"
-description = "CLI personalizado para triagem de vagas com Google Gemini"
+description = "SaaS multiusuário e CLI para triagem de vagas e material de candidatura"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -38,7 +38,7 @@ dev = [
 triar = "triagem.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["triagem*"]
+include = ["triagem*", "api*"]
 
 [tool.setuptools.package-data]
 triagem = ["prompts/*.md"]

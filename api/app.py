@@ -1,16 +1,20 @@
 """API SaaS multiusuário para triagem de vagas."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 load_dotenv()
@@ -19,39 +23,58 @@ from triagem import credenciais, historico, perfil_usuario  # noqa: E402
 
 from .auth import (  # noqa: E402
     COOKIE_SESSAO,
-    criar_token,
-    hash_senha,
     usuario_atual,
     verificar_senha,
 )
-from .billing import _STATUS_ATIVOS, router as billing_router  # noqa: E402
+from .auth_routes import cookie_seguro  # noqa: E402
+from .auth_routes import router as auth_router  # noqa: E402
+from .billing import (  # noqa: E402
+    encerrar_cobranca_para_exclusao,
+    reservar_busca,
+    reservar_material,
+)
+from .billing import (  # noqa: E402
+    router as billing_router,
+)
+from .config import configuracao_publica, producao, validar_configuracao  # noqa: E402
 from .database import (  # noqa: E402
+    Base,
     BuscaDB,
     PerfilDB,
     Usuario,
-    AssinaturaDB,
     VagaDB,
     criar_tabelas,
     sessao,
 )
 from .processamento import agendar  # noqa: E402
+from .security import SecurityMiddleware, limitar_auth  # noqa: E402
+from .worker import ACORDAR, iniciar_embutido  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    validar_configuracao()
     if not os.environ.get("DATABASE_URL"):
         criar_tabelas()
+    worker = iniciar_embutido()
     yield
+    if worker:
+        worker[0].set()
+        ACORDAR.set()
 
 
-app = FastAPI(title="Triagem de Vagas API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Triagem de Vagas API", version="2.1.0", lifespan=lifespan,
+              docs_url=None if producao() else "/docs", redoc_url=None)
 
-_ORIGENS_PADRAO = "http://localhost:5173,http://127.0.0.1:5173"
+_ORIGENS_PADRAO = "" if producao() else "http://localhost:5173,http://127.0.0.1:5173"
 _origens = [
     origem.strip()
     for origem in os.environ.get("TRIAGEM_CORS_ORIGINS", _ORIGENS_PADRAO).split(",")
     if origem.strip()
 ]
+if os.environ.get("TRIAGEM_PUBLIC_URL"):
+    _origens.append(os.environ["TRIAGEM_PUBLIC_URL"].rstrip("/"))
+app.add_middleware(SecurityMiddleware, origens=_origens)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origens,
@@ -61,28 +84,16 @@ app.add_middleware(
 )
 
 app.include_router(billing_router)
+app.include_router(auth_router)
 
 
-class CadastroPayload(BaseModel):
-    email: EmailStr
-    senha: str = Field(min_length=10, max_length=128)
-
-
-class LoginPayload(BaseModel):
-    email: EmailStr
-    senha: str
-
-
-class SessaoResposta(BaseModel):
-    usuario: dict
-
-
-def _gravar_cookie(response: Response, usuario: Usuario) -> None:
-    response.set_cookie(
-        COOKIE_SESSAO, criar_token(usuario), httponly=True,
-        secure=bool(os.environ.get("DATABASE_URL")), samesite="lax",
-        max_age=int(os.environ.get("TRIAGEM_TOKEN_MINUTES", "60")) * 60,
-    )
+@app.exception_handler(SQLAlchemyError)
+async def erro_banco(_request: Request, erro: SQLAlchemyError):
+    # Erros SQL não devem registrar currículo, senha ou parâmetros da consulta.
+    logging.getLogger(__name__).error("Persistência indisponível: %s", type(erro).__name__)
+    return JSONResponse(status_code=503, content={
+        "detail": "O armazenamento está temporariamente indisponível. Tente novamente.",
+    })
 
 
 class DimensaoResumo(BaseModel):
@@ -114,11 +125,11 @@ class AtualizarStatusPayload(BaseModel):
 
 
 class CVPayload(BaseModel):
-    conteudo: str
+    conteudo: str = Field(max_length=50_000)
 
 
 class ExcluirContaPayload(BaseModel):
-    senha: str
+    senha: str = Field(min_length=1, max_length=128)
 
 
 class IniciarBuscaPayload(BaseModel):
@@ -137,6 +148,9 @@ class BuscaResposta(BaseModel):
     limite: int
     criada_em: datetime
     concluida_em: Optional[datetime]
+    tipo: str = "busca"
+    vaga_alvo_id: Optional[str] = None
+    resultado: Optional[str] = None
 
 
 def _perfil_do_usuario(db: Session, usuario: Usuario) -> PerfilDB:
@@ -177,34 +191,19 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/api/auth/cadastro", response_model=SessaoResposta, status_code=status.HTTP_201_CREATED)
-def cadastro(payload: CadastroPayload, response: Response, db: Session = Depends(sessao)):
-    usuario = Usuario(email=str(payload.email).lower(), senha_hash=hash_senha(payload.senha))
-    db.add(usuario)
+@app.get("/ready")
+def ready(db: Session = Depends(sessao)):
     try:
-        db.flush()
-        perfil = perfil_usuario.PerfilUsuario(nome=usuario.email.split("@", 1)[0])
-        db.add(PerfilDB(usuario_id=usuario.id, dados=perfil.model_dump(), cv_base=""))
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        raise HTTPException(409, "Já existe uma conta com este e-mail.") from e
-    _gravar_cookie(response, usuario)
-    return SessaoResposta(usuario={"id": usuario.id, "email": usuario.email})
+        db.execute(text("SELECT 1"))
+        db.execute(select(BuscaDB.id, BuscaDB.worker_token).limit(1))
+    except Exception as erro:
+        raise HTTPException(503, "Banco de dados indisponível ou migrações pendentes.") from erro
+    return {"status": "ready"}
 
 
-@app.post("/api/auth/login", response_model=SessaoResposta)
-def login(payload: LoginPayload, response: Response, db: Session = Depends(sessao)):
-    usuario = db.scalar(select(Usuario).where(Usuario.email == str(payload.email).lower()))
-    if not usuario or not verificar_senha(payload.senha, usuario.senha_hash):
-        raise HTTPException(401, "E-mail ou senha inválidos.")
-    _gravar_cookie(response, usuario)
-    return SessaoResposta(usuario={"id": usuario.id, "email": usuario.email})
-
-
-@app.post("/api/auth/logout", status_code=204)
-def logout(response: Response):
-    response.delete_cookie(COOKIE_SESSAO, httponly=True, samesite="lax")
+@app.get("/api/config/publico")
+def config_publico():
+    return configuracao_publica()
 
 
 @app.get("/api/auth/me")
@@ -218,10 +217,20 @@ def exportar_dados(
 ):
     perfil = _perfil_do_usuario(db, usuario)
     vagas = list(db.scalars(select(VagaDB).where(VagaDB.usuario_id == usuario.id)).all())
+    adicionais = {}
+    for nome in ("buscas", "assinaturas", "aceites_termos", "uso_mensal"):
+        tabela = Base.metadata.tables.get(nome)
+        if tabela is not None:
+            adicionais[nome] = [dict(linha) for linha in db.execute(
+                select(tabela).where(tabela.c.usuario_id == usuario.id)
+            ).mappings()]
+    for busca in adicionais.get("buscas", []):
+        busca.pop("worker_token", None)
     return {
         "usuario": {"id": usuario.id, "email": usuario.email, "criado_em": usuario.criado_em},
         "perfil": perfil.dados,
         "cv_base": perfil.cv_base,
+        **adicionais,
         "vagas": [
             {
                 "id": vaga.vaga_id, "status": vaga.status, "score_final": vaga.score_final,
@@ -236,15 +245,24 @@ def exportar_dados(
 @app.delete("/api/auth/me", status_code=204)
 def excluir_conta(
     payload: ExcluirContaPayload,
+    request: Request,
     response: Response,
     usuario: Usuario = Depends(usuario_atual),
     db: Session = Depends(sessao),
 ):
+    limitar_auth(request, db, "excluir", usuario.email)
     if not verificar_senha(payload.senha, usuario.senha_hash):
         raise HTTPException(403, "Senha incorreta.")
-    db.delete(usuario)
+    # A mesma linha é travada pelo worker antes de persistir resultados.
+    db.execute(select(Usuario.id).where(Usuario.id == usuario.id).with_for_update())
+    encerrar_cobranca_para_exclusao(db, usuario)
+    # Exclusão explícita também em SQLite, inclusive tabelas sem relationship ORM.
+    for tabela in reversed(Base.metadata.sorted_tables):
+        if tabela.name != "usuarios" and "usuario_id" in tabela.c:
+            db.execute(delete(tabela).where(tabela.c.usuario_id == usuario.id))
+    db.execute(delete(Usuario).where(Usuario.id == usuario.id))
     db.commit()
-    response.delete_cookie(COOKIE_SESSAO, httponly=True, samesite="lax")
+    response.delete_cookie(COOKIE_SESSAO, httponly=True, secure=cookie_seguro(), samesite="lax")
 
 
 @app.get("/api/onboarding")
@@ -271,8 +289,15 @@ def atualizar_perfil(
     usuario: Usuario = Depends(usuario_atual),
     db: Session = Depends(sessao),
 ):
+    db.execute(update(Usuario).where(Usuario.id == usuario.id).values(id=Usuario.id))
     registro = _perfil_do_usuario(db, usuario)
     registro.dados = perfil.model_dump()
+    if not perfil.consentimento_ia:
+        db.execute(update(BuscaDB).where(
+            BuscaDB.usuario_id == usuario.id, BuscaDB.estado.in_(["pendente", "processando"]),
+        ).values(estado="falhou", worker_token=None, progresso=100,
+                 mensagem="Processamento interrompido após revogação do consentimento de IA.",
+                 erro="Autorize o uso de IA no perfil para iniciar um novo processamento."))
     db.commit()
     return perfil
 
@@ -304,6 +329,7 @@ def _busca_resposta(busca: BuscaDB) -> BuscaResposta:
         mensagem=busca.mensagem, erro=busca.erro, encontradas=busca.encontradas,
         pedido=busca.pedido, limite=busca.limite,
         criada_em=busca.criada_em, concluida_em=busca.concluida_em,
+        tipo=busca.tipo, vaga_alvo_id=busca.vaga_alvo_id, resultado=busca.resultado,
     )
 
 
@@ -316,9 +342,6 @@ def iniciar_busca(
     credenciais.carregar_no_ambiente()
     if not os.environ.get("GEMINI_API_KEY"):
         raise HTTPException(503, "A integração de análise ainda não foi configurada pelo operador.")
-    assinatura = db.get(AssinaturaDB, usuario.id)
-    if not assinatura or assinatura.status not in _STATUS_ATIVOS:
-        raise HTTPException(402, "Uma assinatura ativa é necessária para buscar vagas.")
     perfil_db = _perfil_do_usuario(db, usuario)
     perfil = perfil_usuario.PerfilUsuario.model_validate(perfil_db.dados)
     if (
@@ -327,18 +350,23 @@ def iniciar_busca(
         or not perfil_db.cv_base.strip()
     ):
         raise HTTPException(409, "Complete o perfil e o currículo antes de buscar vagas.")
-    ativa = db.scalar(select(BuscaDB).where(
-        BuscaDB.usuario_id == usuario.id,
-        BuscaDB.estado.in_(["pendente", "processando"]),
-    ))
-    if ativa:
-        raise HTTPException(409, "Já existe uma busca em andamento para esta conta.")
     pedido = (payload.pedido or perfil.pedido_padrao()).strip()
     if not pedido:
         raise HTTPException(400, "Informe o tipo de vaga desejado.")
+    from triagem.curriculo import preparar_cv_para_ia
+    try:
+        if not preparar_cv_para_ia(perfil_db.cv_base).strip():
+            raise ValueError("O currículo precisa ter conteúdo público para análise.")
+    except ValueError as erro:
+        raise HTTPException(422, str(erro)) from erro
+    reservar_busca(db, usuario, payload.limite)
     busca = BuscaDB(usuario_id=usuario.id, pedido=pedido, limite=payload.limite)
     db.add(busca)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as erro:
+        db.rollback()
+        raise HTTPException(409, "Já existe uma busca em andamento para esta conta.") from erro
     db.refresh(busca)
     agendar(busca.id)
     return _busca_resposta(busca)
@@ -348,6 +376,7 @@ def iniciar_busca(
 def busca_atual(usuario: Usuario = Depends(usuario_atual), db: Session = Depends(sessao)):
     busca = db.scalar(
         select(BuscaDB).where(BuscaDB.usuario_id == usuario.id)
+        .where(BuscaDB.tipo == "busca")
         .order_by(BuscaDB.criada_em.desc()).limit(1)
     )
     return _busca_resposta(busca) if busca else None
@@ -422,3 +451,60 @@ def atualizar_status(
     vaga.status = payload.status
     db.commit()
     return _para_resumo(vaga)
+
+
+@app.post("/api/vagas/{vaga_id}/material", response_model=BuscaResposta, status_code=202)
+def iniciar_material(
+    vaga_id: str, usuario: Usuario = Depends(usuario_atual), db: Session = Depends(sessao),
+):
+    from triagem.curriculo import _preparar_evidencias, preparar_cv_para_ia
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(503, "A integração de análise ainda não foi configurada pelo operador.")
+    vaga = _resolver_vaga(db, usuario, vaga_id)
+    registro = _perfil_do_usuario(db, usuario)
+    perfil = perfil_usuario.PerfilUsuario.model_validate(registro.dados)
+    if not perfil.consentimento_ia or not perfil.onboarding_concluido:
+        raise HTTPException(409, "Complete o perfil e autorize o uso de IA antes de continuar.")
+    try:
+        _preparar_evidencias(preparar_cv_para_ia(registro.cv_base))
+    except ValueError as erro:
+        raise HTTPException(422, str(erro)) from erro
+    reservar_material(db, usuario)
+    busca = BuscaDB(usuario_id=usuario.id, pedido="Material de candidatura", limite=1,
+                    tipo="material", vaga_alvo_id=vaga.vaga_id)
+    db.add(busca)
+    try:
+        db.commit()
+    except IntegrityError as erro:
+        db.rollback()
+        raise HTTPException(409, "Já existe um processamento em andamento para esta conta.") from erro
+    db.refresh(busca)
+    agendar(busca.id)
+    return _busca_resposta(busca)
+
+
+@app.get("/api/vagas/{vaga_id}/material", response_model=Optional[BuscaResposta])
+def obter_material(
+    vaga_id: str, usuario: Usuario = Depends(usuario_atual), db: Session = Depends(sessao),
+):
+    vaga = _resolver_vaga(db, usuario, vaga_id)
+    busca = db.scalar(select(BuscaDB).where(
+        BuscaDB.usuario_id == usuario.id, BuscaDB.tipo == "material",
+        BuscaDB.vaga_alvo_id == vaga.vaga_id,
+    ).order_by(BuscaDB.criada_em.desc()).limit(1))
+    return _busca_resposta(busca) if busca else None
+
+
+# Docker entrega SPA e API na mesma origem; rotas desconhecidas da API mantêm 404.
+_frontend = Path(os.environ.get("TRIAGEM_FRONTEND_DIST", Path(__file__).resolve().parents[1] / "frontend/dist"))
+if (_frontend / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=_frontend / "assets"), name="assets")
+
+    @app.get("/{caminho:path}", include_in_schema=False)
+    def frontend(caminho: str):
+        if caminho == "api" or caminho.startswith(("api/", "billing/")):
+            raise HTTPException(404, "Recurso não encontrado.")
+        arquivo = (_frontend / caminho).resolve()
+        if caminho and arquivo.is_relative_to(_frontend.resolve()) and arquivo.is_file():
+            return FileResponse(arquivo)
+        return FileResponse(_frontend / "index.html", headers={"Cache-Control": "no-cache"})
