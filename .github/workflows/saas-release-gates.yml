@@ -79,6 +79,7 @@ jobs:
           import json
           import re
           import time
+          from http.client import HTTPException
           from urllib.error import HTTPError, URLError
           from urllib.request import urlopen
 
@@ -89,7 +90,7 @@ jobs:
                   with urlopen(base + '/ready', timeout=5) as response:
                       assert json.load(response)['status'] == 'ready'
                   break
-              except (URLError, TimeoutError, AssertionError):
+              except (URLError, OSError, HTTPException, AssertionError):
                   if time.monotonic() >= deadline:
                       raise
                   time.sleep(2)
@@ -117,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           docker restart triagem-smoke
-          curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 2 http://127.0.0.1:8000/ready
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8000/ready
       - name: Container logs
         if: failure()
         run: docker logs triagem-smoke

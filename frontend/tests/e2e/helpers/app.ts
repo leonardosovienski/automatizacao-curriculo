@@ -15,12 +15,20 @@ export const statusLabels = Object.keys(
   STATUS_POR_ROTULO
 ) as (keyof typeof STATUS_POR_ROTULO)[];
 
+let cookiesSessao: Awaited<ReturnType<ReturnType<Page['context']>['cookies']>> | undefined;
+
 export async function openApp(page: Page) {
   const apiUrl = process.env.E2E_API_URL ?? 'http://127.0.0.1:8000';
-  const login = await page.request.post(`${apiUrl}/api/auth/login`, {
-    data: { email: 'e2e@example.com', senha: 'senha-e2e-123' },
-  });
-  expect(login.ok()).toBeTruthy();
+  // Reuse an authenticated session per worker. Repeated login in every UI test
+  // would deliberately trigger the production brute-force protection.
+  if (cookiesSessao) await page.context().addCookies(cookiesSessao);
+  else {
+    const login = await page.request.post(`${apiUrl}/api/auth/login`, {
+      data: { email: 'e2e@example.com', senha: 'senha-e2e-123' },
+    });
+    expect(login.ok(), `Login E2E retornou HTTP ${login.status()}`).toBeTruthy();
+    cookiesSessao = await page.context().cookies(apiUrl);
+  }
   await page.goto('/');
   await expect(
     page.getByRole('heading', { name: 'Triagem de Vagas' })
