@@ -1,5 +1,7 @@
 """Autenticação, persistência e isolamento multiusuário da API SaaS."""
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -37,7 +39,7 @@ def _headers(sessao_auth):
 
 
 def test_health_e_rotas_privadas_exigem_login():
-    cliente = TestClient(api_app.app)
+    cliente = TestClient(api_app.app, headers={"Origin": "http://testserver"})
     assert cliente.get("/health").json() == {"status": "ok"}
     assert cliente.get("/api/vagas").status_code == 401
 
@@ -54,9 +56,10 @@ def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
             yield db
 
     api_app.app.dependency_overrides[sessao] = sessao_teste
-    cliente = TestClient(api_app.app)
+    cliente = TestClient(api_app.app, headers={"Origin": "http://testserver"})
     agendadas = []
     monkeypatch.setenv("GEMINI_API_KEY", "chave-teste")
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_test")
     monkeypatch.setattr(api_app, "agendar", agendadas.append)
     ana = _cadastro(cliente, "ana@example.com")
     bia = _cadastro(cliente, "bia@example.com")
@@ -64,13 +67,17 @@ def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
         db.add(AssinaturaDB(
             usuario_id=ana["usuario"]["id"],
             stripe_customer_id="cus_ana",
+            stripe_subscription_id="sub_ana",
             status="active",
+            preco_id="price_test",
+            periodo_atual_fim=datetime.now(timezone.utc) + timedelta(days=30),
         ))
         perfil_bia = db.get(PerfilDB, bia["usuario"]["id"])
-        perfil_bia.dados.update({
+        perfil_bia.dados = {**perfil_bia.dados,
             "consentimento_ia": True,
             "onboarding_concluido": True,
-        })
+        }
+        perfil_bia.cv_base = "# CV inicial da Bia"
         db.commit()
 
     assert cliente.post(
@@ -101,7 +108,7 @@ def test_fluxo_completo_e_isolamento_entre_usuarios(monkeypatch):
     assert cliente.put(
         "/api/cv", json={"conteudo": "# CV exclusivo da Ana"}, headers=_headers(ana)
     ).status_code == 200
-    assert cliente.get("/api/cv", headers=_headers(bia)).json()["conteudo"] == ""
+    assert cliente.get("/api/cv", headers=_headers(bia)).json()["conteudo"] == "# CV inicial da Bia"
     assert cliente.put(
         "/api/cv", json={"conteudo": "# CV da Bia"}, headers=_headers(bia)
     ).status_code == 200

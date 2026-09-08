@@ -67,6 +67,7 @@ export interface BuscaVagas {
   id: string; pedido: string; limite: number; estado: EstadoBusca;
   progresso: number; mensagem: string; erro: string | null;
   encontradas: number; criada_em: string; concluida_em: string | null;
+  tipo?: "busca" | "material"; vaga_alvo_id?: string | null; resultado?: string | null;
 }
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -105,6 +106,9 @@ export interface StatusAssinatura {
   status: string;
   ativa: boolean;
   periodo_atual_fim: string | null;
+  configurado: boolean;
+  plano: { nome: string; valor_centavos: number; moeda: string; intervalo: string; intervalo_contagem: number } | null;
+  uso: { mes: string; buscas_utilizadas: number; buscas_limite: number; analises_reservadas: number; analises_limite: number; reinicia_em: string };
 }
 
 export const NIVEL_LABEL: Record<string, string> = {

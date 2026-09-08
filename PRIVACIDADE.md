@@ -38,8 +38,8 @@ comunicar avisos operacionais sobre o Serviço.
 Para operar o Serviço, dados podem ser processados por:
 
 - **Google Gemini** (análise/pontuação de vagas e geração de conteúdo);
-- **Jooble, Adzuna e outras fontes de busca de vagas** (consulta de vagas
-  públicas, sem envio de dados pessoais seus);
+- **Jooble, Adzuna e outras fontes de busca de vagas** (recebem termos de busca,
+  como cargo e localidade; evite colocar dados pessoais no pedido de pesquisa);
 - **Stripe** (processamento de pagamentos e gestão de assinatura);
 - **Provedores de infraestrutura** (hospedagem do backend e frontend).
 
@@ -70,3 +70,18 @@ por lei.
 
 Dúvidas sobre esta Política ou solicitações relativas a dados pessoais
 podem ser enviadas para o e-mail de suporte informado no Serviço.
+
+## Informações que o operador precisa completar antes da publicação
+
+Identifique o responsável pelo serviço, endereço/canal de atendimento, provedores
+de hospedagem, países de processamento, condições do Gemini contratado e prazos
+de retenção dos dados e backups. Publique a versão revisada em
+`TRIAGEM_PRIVACY_URL` e configure `TRIAGEM_SUPPORT_EMAIL`.
+
+Na aplicação, o usuário pode editar o perfil, revogar o consentimento de IA,
+exportar seus dados e solicitar exclusão confirmando sua senha. A revogação
+interrompe os processamentos em andamento, mas não desfaz dados já enviados aos
+provedores. Blocos do currículo marcados como `<!-- PRIVADO -->` e
+`<!-- /PRIVADO -->` são removidos antes das chamadas de IA; o currículo original
+continua armazenado na conta para edição. Cache e diagnósticos de cada execução
+SaaS são isolados e temporários.

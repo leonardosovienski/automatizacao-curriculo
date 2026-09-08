@@ -25,7 +25,7 @@ test.describe('Triagem de Vagas — smoke, UX e integridade', () => {
 
   test('carrega a aplicação e os controles principais', async ({ page }) => {
     await expect(
-      page.getByText('Scoring automático com Google Gemini')
+      page.getByText('Seu próximo passo profissional')
     ).toBeVisible();
 
     await expect(searchBox(page)).toBeVisible();

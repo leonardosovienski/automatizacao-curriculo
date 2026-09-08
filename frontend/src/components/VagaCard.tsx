@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
+import { AlertTriangle, ChevronDown, ExternalLink, FileText } from "lucide-react";
 import { useState } from "react";
 import {
   DIMENSAO_LABEL,
@@ -12,6 +12,7 @@ import {
 import { Chip } from "./Chip";
 import { ScoreRing } from "./ScoreRing";
 import { Spinner } from "./Spinner";
+import { MaterialModal } from "./MaterialModal";
 
 interface Props {
   vaga: VagaResumo;
@@ -21,6 +22,8 @@ interface Props {
 
 export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
   const [aberto, setAberto] = useState(false);
+  const [materialAberto, setMaterialAberto] = useState(false);
+  const linkSeguro = vaga.link && /^https?:\/\//i.test(vaga.link) ? vaga.link : null;
   const temDetalhes =
     vaga.stack_exigida.length > 0 ||
     vaga.stack_desejavel.length > 0 ||
@@ -34,6 +37,7 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
         <button
           type="button"
           onClick={() => temDetalhes && setAberto((v) => !v)}
+          aria-expanded={temDetalhes ? aberto : undefined}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
           <ScoreRing score={vaga.score_final} />
@@ -67,7 +71,7 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
           )}
         </button>
 
-        <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:flex-col sm:items-end">
           <div className="relative">
             <select
               value={vaga.status}
@@ -93,16 +97,17 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
               </span>
             )}
           </div>
-          {vaga.link && (
+          {linkSeguro && (
             <a
-              href={vaga.link}
+              href={linkSeguro}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-accent hover:underline"
+              className="inline-flex items-center gap-1 whitespace-nowrap text-sm text-accent hover:underline"
             >
               Vaga original <ExternalLink size={13} />
             </a>
           )}
+          {vaga.status !== "descartada" && <button onClick={() => setMaterialAberto(true)} className="inline-flex items-center gap-1 whitespace-nowrap py-1 text-sm text-accent"><FileText size={14} />Preparar candidatura</button>}
         </div>
       </div>
 
@@ -172,6 +177,7 @@ export function VagaCard({ vaga, onStatusChange, atualizando }: Props) {
           )}
         </div>
       )}
+      <MaterialModal open={materialAberto} onClose={() => setMaterialAberto(false)} vaga={vaga} />
     </div>
   );
 }

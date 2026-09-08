@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _FIXTURE = Path(__file__).resolve().parent.parent / "frontend/tests/e2e/fixtures/historico.seed.json"
@@ -10,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> None:
+    os.environ.setdefault("STRIPE_PRICE_ID", "price_e2e")
+    os.environ["TRIAGEM_WORKER_MODE"] = "disabled"
     caminho = Path(os.environ["TRIAGEM_DATABASE"])
     if caminho.exists():
         caminho.unlink()
@@ -26,13 +29,17 @@ def main() -> None:
         db.flush()
         perfil = PerfilUsuario(
             nome="E2E", cidades_aceitas=["Curitiba"], areas=["DevOps"],
-            senioridades=["Júnior"], onboarding_concluido=True,
+            senioridades=["Júnior"], onboarding_concluido=True, consentimento_ia=True,
         )
-        db.add(PerfilDB(usuario_id=usuario.id, dados=perfil.model_dump(), cv_base="# CV E2E"))
+        db.add(PerfilDB(usuario_id=usuario.id, dados=perfil.model_dump(),
+                       cv_base="# CV E2E\nExperiência com Python e Docker em projetos."))
         db.add(AssinaturaDB(
             usuario_id=usuario.id,
             stripe_customer_id="cus_e2e",
             status="active",
+            stripe_subscription_id="sub_e2e",
+            preco_id=os.environ["STRIPE_PRICE_ID"],
+            periodo_atual_fim=datetime.now(timezone.utc) + timedelta(days=30),
         ))
         for vaga_id, entrada in fixture.items():
             db.add(VagaDB(

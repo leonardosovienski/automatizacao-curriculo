@@ -13,6 +13,7 @@ test('onboarding obrigatório salva perfil e CV sem devolver credenciais', async
   const gravados: string[] = [];
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
+    if (url.endsWith('/api/config/publico')) return route.fulfill({ json: { nome_servico: 'Triagem de Vagas', suporte_email: null, termos_url: null, privacidade_url: null } });
     if (url.endsWith('/api/auth/me')) return route.fulfill({ json: { id: '1', email: 'teste@example.com' } });
     if (url.endsWith('/api/onboarding')) return route.fulfill({ json: { concluido: false, consentimento_ia: false, cv_configurado: false, credenciais: {} } });
     if (url.endsWith('/api/perfil') && route.request().method() === 'GET') return route.fulfill({ json: perfil });
@@ -29,6 +30,7 @@ test('onboarding obrigatório salva perfil e CV sem devolver credenciais', async
   await expect(page.getByText('Configure seu perfil')).toBeVisible();
   await page.getByLabel('Nome').fill('Ana');
   await page.getByLabel('Áreas/cargos, separados por vírgula').fill('QA, Automação');
+  await page.getByLabel('Currículo-base').fill('Experiência profissional em qualidade de software e automação de testes em Python e JavaScript.');
   await page.getByRole('button', { name: 'Concluir configuração' }).click();
   await expect.poll(() => gravados.some((u) => u.endsWith('/api/cv'))).toBe(true);
   await expect.poll(() => gravados.some((u) => u.endsWith('/api/perfil'))).toBe(true);

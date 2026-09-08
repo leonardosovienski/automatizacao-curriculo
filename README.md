@@ -1,20 +1,16 @@
-# Triagem de Vagas — agente personalizado
+# Triagem de Vagas — SaaS e CLI
 
-CLI que recebe vagas de emprego (JSON ou texto livre), aplica hard filters e pontua cada
-vaga em 5 dimensões contra o perfil do candidato (Leo — estágio/Jr em C#/.NET ou
-DevOps/DevSecOps, Curitiba/Araucária ou remoto), usando a camada gratuita da API Gemini.
-Mantém histórico com deduplicação, acompanha o status das candidaturas e gera material
-de CV sob medida para cada vaga.
+Aplicação multiusuário para buscar e classificar vagas conforme o perfil do candidato,
+acompanhar candidaturas e gerar material de currículo com evidências. Inclui
+autenticação, recuperação de senha, assinatura Stripe, cotas e controle dos dados.
+O CLI local continua disponível.
 
-> **Retomando o projeto?** O estado atual, as decisões de arquitetura e as pendências
-> estão em [HANDOFF.md](HANDOFF.md).
+**Implantação e ativação comercial:** consulte [Operação do SaaS](docs/OPERACAO_SAAS.md).
+A imagem Docker entrega frontend, API e fila durável. Configure domínio, PostgreSQL,
+Stripe, Gemini, SMTP e documentos do operador e valide os serviços reais antes de vender.
+As validações históricas abaixo se referem ao CLI e não certificam a operação SaaS.
 
-> **Estado em 2026-08-08:** revisão concluída e incorporada à `main` no commit
-> `cc06320` pelos PRs [#36](https://github.com/leonardosovienski/automatizacao-curriculo/pull/36)
-> e [#37](https://github.com/leonardosovienski/automatizacao-curriculo/pull/37). A validação
-> validação local passou com 342 testes Python, 79,42% de cobertura, 48 testes E2E, build do
-> frontend, auditoria de dependências, CodeQL e pipeline real. Não há bloqueio técnico
-> conhecido; `main` é a única branch ativa.
+> Retomando o projeto? Consulte [HANDOFF.md](HANDOFF.md) e os gates atuais de CI.
 
 ## Como funciona
 
