@@ -1,5 +1,6 @@
 """API SaaS multiusuário para triagem de vagas."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -9,11 +10,11 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 load_dotenv()
@@ -84,6 +85,15 @@ app.add_middleware(
 
 app.include_router(billing_router)
 app.include_router(auth_router)
+
+
+@app.exception_handler(SQLAlchemyError)
+async def erro_banco(_request: Request, erro: SQLAlchemyError):
+    # Erros SQL não devem registrar currículo, senha ou parâmetros da consulta.
+    logging.getLogger(__name__).error("Persistência indisponível: %s", type(erro).__name__)
+    return JSONResponse(status_code=503, content={
+        "detail": "O armazenamento está temporariamente indisponível. Tente novamente.",
+    })
 
 
 class DimensaoResumo(BaseModel):

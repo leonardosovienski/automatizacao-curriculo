@@ -11,16 +11,20 @@ const perfil = {
 
 test('onboarding obrigatório salva perfil e CV sem devolver credenciais', async ({ page }) => {
   const gravados: string[] = [];
+  let perfilSalvo = { ...perfil };
+  let cvSalvo = '';
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
     if (url.endsWith('/api/config/publico')) return route.fulfill({ json: { nome_servico: 'Triagem de Vagas', suporte_email: null, termos_url: null, privacidade_url: null } });
     if (url.endsWith('/api/auth/me')) return route.fulfill({ json: { id: '1', email: 'teste@example.com' } });
-    if (url.endsWith('/api/onboarding')) return route.fulfill({ json: { concluido: false, consentimento_ia: false, cv_configurado: false, credenciais: {} } });
-    if (url.endsWith('/api/perfil') && route.request().method() === 'GET') return route.fulfill({ json: perfil });
-    if (url.endsWith('/api/cv') && route.request().method() === 'GET') return route.fulfill({ json: { conteudo: '', caminho: 'cv.md' } });
+    if (url.endsWith('/api/onboarding')) return route.fulfill({ json: { concluido: perfilSalvo.onboarding_concluido, consentimento_ia: perfilSalvo.consentimento_ia, cv_configurado: !!cvSalvo } });
+    if (url.endsWith('/api/perfil') && route.request().method() === 'GET') return route.fulfill({ json: perfilSalvo });
+    if (url.endsWith('/api/cv') && route.request().method() === 'GET') return route.fulfill({ json: { conteudo: cvSalvo } });
     if (route.request().method() === 'PUT') {
       gravados.push(url);
-      return route.fulfill({ json: url.endsWith('/perfil') ? { ...perfil, onboarding_concluido: true } : { salvo: true } });
+      if (url.endsWith('/perfil')) perfilSalvo = route.request().postDataJSON();
+      if (url.endsWith('/cv')) cvSalvo = route.request().postDataJSON().conteudo;
+      return route.fulfill({ json: url.endsWith('/perfil') ? perfilSalvo : { salvo: true } });
     }
     if (url.endsWith('/api/stats')) return route.fulfill({ json: { total: 0, por_status: {} } });
     if (url.includes('/api/vagas')) return route.fulfill({ json: [] });
@@ -35,4 +39,10 @@ test('onboarding obrigatório salva perfil e CV sem devolver credenciais', async
   await expect.poll(() => gravados.some((u) => u.endsWith('/api/cv'))).toBe(true);
   await expect.poll(() => gravados.some((u) => u.endsWith('/api/perfil'))).toBe(true);
   await expect(page.getByText('Configure seu perfil')).toBeHidden();
+  // Verify persisted state after a fresh page load, not just the immediate close.
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Buscar vagas', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(perfilSalvo.areas).toEqual(['QA', 'Automação']);
+  expect(cvSalvo).toContain('qualidade de software');
 });

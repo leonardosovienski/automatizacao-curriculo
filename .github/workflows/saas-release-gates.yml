@@ -66,7 +66,11 @@ jobs:
           docker run --detach --name triagem-smoke
           --publish 127.0.0.1:8000:8000
           --env TRIAGEM_ENV=staging
-          --env TRIAGEM_WORKER_MODE=disabled
+          --env TRIAGEM_WORKER_MODE=embedded
+          --env GEMINI_API_KEY=
+          --env JOOBLE_API_KEY=
+          --env ADZUNA_APP_ID=
+          --env ADZUNA_API_KEY=
           --env TRIAGEM_PUBLIC_URL=http://localhost:8000
           --env TRIAGEM_JWT_SECRET=ci-only-disposable-secret-8f9c31a22bb44708ae74135d207629ef
           triagem-ci:${{ github.sha }}
@@ -112,6 +116,38 @@ jobs:
           with urlopen(base + '/api/config/publico', timeout=5) as response:
               assert json.load(response)['nome_servico']
           print('Readiness, frontend/assets and API boundaries verified.')
+          PY
+      - name: Verify persisted queue runs in an isolated process without provider credentials
+        shell: bash
+        run: |
+          docker exec -i triagem-smoke python - <<'PY'
+          import time
+          from api.database import BuscaDB, PerfilDB, SessionLocal, Usuario
+          from triagem.perfil_usuario import PerfilUsuario
+
+          with SessionLocal() as db:
+              usuario = Usuario(email='smoke@example.test', senha_hash='unused-test-fixture')
+              db.add(usuario)
+              db.flush()
+              perfil = PerfilUsuario(nome='Smoke', consentimento_ia=True, onboarding_concluido=True)
+              db.add(PerfilDB(usuario_id=usuario.id, dados=perfil.model_dump(),
+                             cv_base='Experiência com Python em projetos de automação.'))
+              tarefa = BuscaDB(usuario_id=usuario.id, pedido='Python', limite=1)
+              db.add(tarefa)
+              db.commit()
+              identificador = tarefa.id
+          limite = time.monotonic() + 60
+          while time.monotonic() < limite:
+              with SessionLocal() as db:
+                  tarefa = db.get(BuscaDB, identificador)
+                  if tarefa.estado == 'falhou':
+                      assert tarefa.iniciada_em and tarefa.concluida_em and tarefa.worker_token
+                      assert 'Não foi possível concluir' in tarefa.erro
+                      print('Persisted task claimed and handled by isolated worker without API credentials.')
+                      break
+              time.sleep(1)
+          else:
+              raise AssertionError('Embedded worker did not claim and finish persisted task')
           PY
       - name: Verify migrations are safe on container restart
         shell: bash

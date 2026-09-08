@@ -1,12 +1,15 @@
 """Fluxos de conta, materiais e configuração usando a aplicação integrada."""
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import sessionmaker
 
 from api import app as api_app
@@ -204,6 +207,31 @@ def test_ready_detecta_banco_indisponivel_sem_detalhes_internos(ambiente):
     resposta = cliente.get("/ready")
     assert resposta.status_code == 503
     assert "SEGREDO-SENHA" not in resposta.text
+
+
+def test_erro_sql_responde_503_sem_parametros_pessoais_em_resposta_ou_log(ambiente, caplog):
+    cliente, _, _, _ = ambiente
+
+    class BancoComFalha:
+        bind = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+        def execute(self, *_args, **_kwargs):
+            raise StatementError(
+                "SENTINELA-MENSAGEM", "SELECT SENTINELA-SQL",
+                {"cv": "SENTINELA-CURRICULO", "senha": "SENTINELA-SENHA"},
+                ValueError("SENTINELA-PROVEDOR"),
+            )
+
+    api_app.app.dependency_overrides[sessao] = lambda: BancoComFalha()
+    with caplog.at_level(logging.ERROR, logger="api.app"):
+        resposta = cliente.post("/api/auth/login", json={"email": "ana@example.com", "senha": "senha-forte-123"})
+    assert resposta.status_code == 503
+    assert resposta.json() == {"detail": "O armazenamento está temporariamente indisponível. Tente novamente."}
+    assert "Persistência indisponível: StatementError" in caplog.text
+    assert "SENTINELA" not in resposta.text + caplog.text
+    assert resposta.headers["cache-control"] == "no-store"
+    assert resposta.headers["x-content-type-options"] == "nosniff"
+    assert resposta.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'"
 
 
 def producao_configurada(monkeypatch):

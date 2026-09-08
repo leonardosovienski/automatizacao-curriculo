@@ -83,15 +83,18 @@ function Dashboard({ onLogout, usuario, config }: { onLogout: (aviso?: string) =
   }, []);
 
   useEffect(() => {
+    let cancelado = false;
     obterOnboarding()
       .then((estado) => {
+        if (cancelado) return;
         setPerfilPronto(estado.concluido && estado.consentimento_ia && estado.cv_configurado);
         if (!estado.concluido && !new URLSearchParams(window.location.search).has("sucesso") && !retornoCheckout) {
           setConfigObrigatoria(true);
           setConfigAberta(true);
         }
       })
-      .catch(() => setErro("Não foi possível carregar seu perfil. Abra as configurações para tentar novamente."));
+      .catch(() => { if (!cancelado) setErro("Não foi possível carregar seu perfil. Abra as configurações para tentar novamente."); });
+    return () => { cancelado = true; };
   }, [recarregar, retornoCheckout]);
 
   useEffect(() => {
