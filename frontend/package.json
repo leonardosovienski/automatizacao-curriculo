@@ -17,22 +17,22 @@
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "axios": "^1.20.0",
-    "lucide-react": "^1.48.0",
-    "postcss": "^8.5.28",
+    "lucide-react": "^1.55.0",
+    "postcss": "^8.5.29",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.63.0",
-    "@types/node": "^26.6.2",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "oxlint": "^1.85.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxlint": "^1.87.0",
     "typescript": "~7.0.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.4"
   },
   "overrides": {
     "nanoid": "^3.3.18"
