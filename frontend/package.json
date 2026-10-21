@@ -32,7 +32,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.85.0",
     "typescript": "~7.0.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.5"
   },
   "overrides": {
     "nanoid": "^3.3.18"
